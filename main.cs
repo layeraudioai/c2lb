@@ -1301,6 +1301,23 @@ namespace ToyConEngine
                 if (clicked && toggleRect.Contains(mousePos)) btnNode.IsToggle = !btnNode.IsToggle;
                 if (IsKeyPressed(keyboard, Keys.Space)) btnNode.IsToggle = !btnNode.IsToggle;
             }
+            else if (_inspectedNode is BeepOutputNode beepNode)
+            {
+                int btnY = y + 30;
+                Rectangle prevRect = new Rectangle(x, btnY, 30, 30);
+                Rectangle nextRect = new Rectangle(x + 200, btnY, 30, 30);
+
+                if (clicked)
+                {
+                    int idx = _availableSounds.IndexOf(beepNode.SoundName);
+                    if (idx == -1) idx = 0;
+                    if (prevRect.Contains(mousePos)) idx--;
+                    if (nextRect.Contains(mousePos)) idx++;
+                    if (idx < 0) idx = _availableSounds.Count - 1;
+                    if (idx >= _availableSounds.Count) idx = 0;
+                    beepNode.SoundName = _availableSounds[idx];
+                }
+            }
             else if (_inspectedNode is ScriptImporterNode scriptNode)
             {
                 HandleScriptInput(keyboard, ref _inputValueBuffer);
@@ -1398,20 +1415,6 @@ namespace ToyConEngine
                     _spriteBatch.DrawString(_font, "<", new Vector2(x + 10, y + 5), Color.White);
                     _spriteBatch.DrawString(_font, beepNode.SoundName, new Vector2(x + 40, y + 5), Color.White);
                     _spriteBatch.DrawString(_font, ">", new Vector2(x + 210, y + 5), Color.White);
-                }
-
-                if (clicked)
-                {
-                    int idx = _availableSounds.IndexOf(beepNode.SoundName);
-                    if (idx == -1) idx = 0;
-
-                    if (prevRect.Contains(mousePos)) idx--;
-                    if (nextRect.Contains(mousePos)) idx++;
-
-                    if (idx < 0) idx = _availableSounds.Count - 1;
-                    if (idx >= _availableSounds.Count) idx = 0;
-
-                    beepNode.SoundName = _availableSounds[idx];
                 }
             }
             else if (_inspectedNode is ScriptImporterNode scriptNode)
