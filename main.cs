@@ -35,7 +35,7 @@ namespace ToyConEngine
         public string Name { get; set; }
         public Node ParentNode { get; set; }
         public float Value { get; private set; }
-        
+
         // Update the value sitting on this port
         public void SetValue(float value)
         {
@@ -122,10 +122,10 @@ namespace ToyConEngine
         {
             Name = $"Logic ({type})";
             Type = type;
-            
+
             AddInput("In 1");
             if (type != LogicType.Not) AddInput("In 2"); // NOT only needs 1 input
-            
+
             AddOutput("Result");
         }
 
@@ -133,7 +133,7 @@ namespace ToyConEngine
         {
             float a = Inputs[0].GetValue();
             // Logic in GBG usually treats > 0 as True
-            bool boolA = Math.Abs(a) > 0.001f; 
+            bool boolA = Math.Abs(a) > 0.001f;
 
             float result = 0.0f;
 
@@ -289,7 +289,7 @@ namespace ToyConEngine
         {
             var mouse = Mouse.GetState();
             var bounds = ToyConGame.ClientBounds;
-            
+
             float x = (bounds.Width > 0) ? (float)mouse.X / bounds.Width : 0f;
             float y = (bounds.Height > 0) ? (float)mouse.Y / bounds.Height : 0f;
 
@@ -351,6 +351,21 @@ namespace ToyConEngine
         }
     }
 
+    // A Script Importer Node
+    public class ScriptImporterNode : Node
+    {
+        public string Script { get; set; } = "";
+
+        public ScriptImporterNode()
+        {
+            Name = "Script Importer";
+        }
+
+        public override void Evaluate(GameTime gameTime)
+        {
+        }
+    }
+
     // 4. The Graph Manager (The Engine)
     public class GraphEngine
     {
@@ -387,7 +402,7 @@ namespace ToyConEngine
         private SoundEffect _beepSound;
 
         private GraphEngine _engine;
-        
+
         // Visual State
         private Dictionary<Node, Rectangle> _nodeRects = new Dictionary<Node, Rectangle>();
         private Node _draggedNode = null;
@@ -440,6 +455,9 @@ namespace ToyConEngine
                 { "Output", new List<(string, Func<Node>)> {
                     ("Color", () => new ColorOutputNode()),
                     ("Beep", () => new BeepOutputNode())
+                }},
+                { "Import", new List<(string, Func<Node>)> {
+                    ("Script", () => new ScriptImporterNode())
                 }}
             };
 
@@ -603,6 +621,7 @@ namespace ToyConEngine
                             _inputValueBuffer = "";
                             if (_inspectedNode is ConstantNode c) _inputValueBuffer = c.StoredValue.ToString();
                             if (_inspectedNode is CounterNode cnt) _inputValueBuffer = cnt.Value.ToString();
+                            if (_inspectedNode is ScriptImporterNode sn) _inputValueBuffer = sn.Script;
                             _draggedNode = null;
                             doubleClickHandled = true;
                             break;
@@ -714,7 +733,7 @@ namespace ToyConEngine
             {
                 var node = kvp.Key;
                 var rect = kvp.Value;
-                
+
                 // Color code based on type
                 Color color = Color.Gray;
                 if (node is MathNode) color = Color.RoyalBlue;
@@ -729,7 +748,7 @@ namespace ToyConEngine
                 if (node is BeepOutputNode) color = Color.HotPink;
 
                 _spriteBatch.Draw(_pixel, rect, color);
-                
+
                 // Border
                 DrawHollowRect(_spriteBatch, rect, Color.White);
 
@@ -862,10 +881,105 @@ namespace ToyConEngine
             }
         }
 
+        private void HandleScriptInput(KeyboardState current, ref string buffer)
+        {
+            foreach (Keys key in current.GetPressedKeys())
+            {
+                if (!_prevKeyboardState.IsKeyDown(key))
+                {
+                    if (key == Keys.Back && buffer.Length > 0)
+                        buffer = buffer.Substring(0, buffer.Length - 1);
+                    else if (key == Keys.Enter)
+                        buffer += "\n";
+                    else if (key == Keys.Space)
+                        buffer += " ";
+                    else
+                    {
+                        char? c = ScriptKeyToChar(key, current.IsKeyDown(Keys.LeftShift) || current.IsKeyDown(Keys.RightShift));
+                        if (c.HasValue) buffer += c.Value;
+                    }
+                }
+            }
+        }
+
+        private void ParseAndGenerateGraph(string script)
+        {
+            var lines = script.Split(new[] { '\r', '\n', ';' }, StringSplitOptions.RemoveEmptyEntries);
+            var variables = new Dictionary<string, Node>();
+            int currentY = 100;
+            int currentX = 100;
+
+            foreach (var line in lines)
+            {
+                try
+                {
+                    var parts = line.Trim().Split(' ');
+                    if (parts.Length < 3) continue;
+
+                    var pList = parts.ToList();
+                    if (pList[0] == "var" || pList[0] == "int" || pList[0] == "float") pList.RemoveAt(0);
+                    parts = pList.ToArray();
+
+                    if (parts.Length < 3 || parts[1] != "=") continue;
+
+                    string targetVar = parts[0];
+                    Node createdNode = null;
+
+                    if (parts.Length == 5) // a = b + c
+                    {
+                        string op1 = parts[2];
+                        string op = parts[3];
+                        string op2 = parts[4];
+
+                        MathNode.Operation? mathOp = null;
+                        if (op == "+") mathOp = MathNode.Operation.Add;
+                        if (op == "-") mathOp = MathNode.Operation.Subtract;
+                        if (op == "*") mathOp = MathNode.Operation.Multiply;
+                        if (op == "/") mathOp = MathNode.Operation.Divide;
+
+                        if (mathOp.HasValue)
+                        {
+                            var mathNode = new MathNode(mathOp.Value);
+                            createdNode = mathNode;
+
+                            if (variables.ContainsKey(op1)) _engine.Connect(variables[op1], 0, mathNode, 0);
+                            else if (float.TryParse(op1, out float val1)) { var c = new ConstantNode(val1); SpawnNodeAt(c, currentX - 150, currentY); _engine.Connect(c, 0, mathNode, 0); }
+
+                            if (variables.ContainsKey(op2)) _engine.Connect(variables[op2], 0, mathNode, 1);
+                            else if (float.TryParse(op2, out float val2)) { var c = new ConstantNode(val2); SpawnNodeAt(c, currentX - 150, currentY + 50); _engine.Connect(c, 0, mathNode, 1); }
+                        }
+                    }
+                    else if (parts.Length == 3) // a = 5
+                    {
+                        if (float.TryParse(parts[2], out float val))
+                        {
+                            createdNode = new ConstantNode(val);
+                        }
+                        else if (variables.ContainsKey(parts[2]))
+                        {
+                            var mathNode = new MathNode(MathNode.Operation.Add); // Identity
+                            createdNode = mathNode;
+                            _engine.Connect(variables[parts[2]], 0, mathNode, 0);
+                        }
+                    }
+
+                    if (createdNode != null)
+                    {
+                        createdNode.Name = targetVar;
+                        variables[targetVar] = createdNode;
+                        SpawnNodeAt(createdNode, currentX, currentY);
+                        currentY += 100;
+                        if (currentY > 400) { currentY = 100; currentX += 200; }
+                    }
+                }
+                catch { }
+            }
+        }
+
         private void UpdateOverlay(MouseState mouse, KeyboardState keyboard, bool clicked)
         {
             _overlayRect = new Rectangle(Window.ClientBounds.Width / 2 - 150, Window.ClientBounds.Height / 2 - 100, 300, 200);
-            
+
             Point mousePos = mouse.Position;
 
             // Close Button
@@ -891,13 +1005,13 @@ namespace ToyConEngine
             {
                 Rectangle minusRect = new Rectangle(x, y, 30, 30);
                 Rectangle plusRect = new Rectangle(x + 100, y, 30, 30);
-                
-                if (clicked && minusRect.Contains(mousePos)) 
+
+                if (clicked && minusRect.Contains(mousePos))
                 {
                     cNode.StoredValue = (float)Math.Floor(cNode.StoredValue - 1.0f);
                     _inputValueBuffer = cNode.StoredValue.ToString();
                 }
-                if (clicked && plusRect.Contains(mousePos)) 
+                if (clicked && plusRect.Contains(mousePos))
                 {
                     cNode.StoredValue = (float)Math.Floor(cNode.StoredValue + 1.0f);
                     _inputValueBuffer = cNode.StoredValue.ToString();
@@ -923,7 +1037,7 @@ namespace ToyConEngine
             else if (_inspectedNode is KeyNode kNode)
             {
                 Rectangle btnRect = new Rectangle(x, y, 200, 30);
-                if (clicked && btnRect.Contains(mousePos)) 
+                if (clicked && btnRect.Contains(mousePos))
                 {
                     Keys[] commonKeys = { Keys.Space, Keys.A, Keys.B, Keys.Up, Keys.Down, Keys.Left, Keys.Right, Keys.Enter, Keys.W, Keys.S };
                     int idx = Array.IndexOf(commonKeys, kNode.Key);
@@ -931,7 +1045,7 @@ namespace ToyConEngine
                     kNode.Key = commonKeys[idx];
                     kNode.Name = $"Key ({kNode.Key})";
                 }
-                
+
                 Keys[] pressed = keyboard.GetPressedKeys();
                 foreach (var k in pressed)
                 {
@@ -953,12 +1067,12 @@ namespace ToyConEngine
             {
                 Rectangle minusRect = new Rectangle(x, y, 30, 30);
                 Rectangle plusRect = new Rectangle(x + 100, y, 30, 30);
-                if (clicked && minusRect.Contains(mousePos)) 
+                if (clicked && minusRect.Contains(mousePos))
                 {
                     cntNode.Value--;
                     _inputValueBuffer = cntNode.Value.ToString();
                 }
-                if (clicked && plusRect.Contains(mousePos)) 
+                if (clicked && plusRect.Contains(mousePos))
                 {
                     cntNode.Value++;
                     _inputValueBuffer = cntNode.Value.ToString();
@@ -972,6 +1086,18 @@ namespace ToyConEngine
                 Rectangle toggleRect = new Rectangle(x, y, 200, 30);
                 if (clicked && toggleRect.Contains(mousePos)) btnNode.IsToggle = !btnNode.IsToggle;
                 if (IsKeyPressed(keyboard, Keys.Space)) btnNode.IsToggle = !btnNode.IsToggle;
+            }
+            else if (_inspectedNode is ScriptImporterNode scriptNode)
+            {
+                HandleScriptInput(keyboard, ref _inputValueBuffer);
+                scriptNode.Script = _inputValueBuffer;
+
+                Rectangle btnRect = new Rectangle(x, y + 150, 100, 30);
+                if (clicked && btnRect.Contains(mousePos))
+                {
+                    ParseAndGenerateGraph(scriptNode.Script);
+                    _inspectedNode = null;
+                }
             }
         }
 
@@ -1046,6 +1172,19 @@ namespace ToyConEngine
             {
                 if (_font != null) _spriteBatch.DrawString(_font, $"Vol:{beepNode.Volume:0.0} Pitch:{beepNode.Pitch:0.0}", new Vector2(x, y), Color.White);
             }
+            else if (_inspectedNode is ScriptImporterNode scriptNode)
+            {
+                if (_font != null)
+                {
+                    _spriteBatch.DrawString(_font, "Type script (var a=1; b=a+2;):", new Vector2(x, y), Color.White);
+                    _spriteBatch.DrawString(_font, _inputValueBuffer + "|", new Vector2(x, y + 20), Color.Yellow);
+
+                    Rectangle btnRect = new Rectangle(x, y + 150, 100, 30);
+                    _spriteBatch.Draw(_pixel, btnRect, Color.Gray);
+                    DrawHollowRect(_spriteBatch, btnRect, Color.White);
+                    _spriteBatch.DrawString(_font, "Compile", new Vector2(x + 10, y + 155), Color.White);
+                }
+            }
         }
 
         private void HandleTextInput(KeyboardState current, ref string buffer)
@@ -1074,6 +1213,31 @@ namespace ToyConEngine
             return null;
         }
 
+        private char? ScriptKeyToChar(Keys key, bool shift)
+        {
+            if (key >= Keys.A && key <= Keys.Z) return shift ? key.ToString()[0] : key.ToString().ToLower()[0];
+            if (key >= Keys.D0 && key <= Keys.D9)
+            {
+                string s = (key - Keys.D0).ToString();
+                if (shift)
+                {
+                    if (s == "9") return '(';
+                    if (s == "0") return ')';
+                    if (s == "8") return '*';
+                    if (s == "5") return '%';
+                }
+                return s[0];
+            }
+            if (key == Keys.OemPlus || key == Keys.Add) return shift ? '+' : '=';
+            if (key == Keys.OemMinus || key == Keys.Subtract) return shift ? '_' : '-';
+            if (key == Keys.OemPeriod) return '.';
+            if (key == Keys.OemComma) return ',';
+            if (key == Keys.OemSemicolon) return ';';
+            if (key == Keys.OemQuestion) return shift ? '?' : '/';
+            return null;
+        }
+
+
         private void DeleteNode(Node node)
         {
             _engine.Nodes.Remove(node);
@@ -1093,8 +1257,13 @@ namespace ToyConEngine
 
         private void SpawnNode(Node node)
         {
-            _engine.Nodes.Add(node);
             var mousePos = Mouse.GetState().Position;
+            SpawnNodeAt(node, mousePos.X, mousePos.Y);
+        }
+
+        private void SpawnNodeAt(Node node, int x, int y)
+        {
+            _engine.Nodes.Add(node);
             int width = 100;
             int height = 60;
             if (node.Inputs.Count + node.Outputs.Count > 2)
@@ -1102,7 +1271,7 @@ namespace ToyConEngine
                 width = 120;
                 height = 80;
             }
-            _nodeRects[node] = new Rectangle(mousePos.X, mousePos.Y, width, height);
+            _nodeRects[node] = new Rectangle(x, y, width, height);
         }
 
         private Vector2 GetInputPosition(Node node, int slotIndex)
