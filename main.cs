@@ -1,10 +1,14 @@
 using System;
+using System.IO;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using Microsoft.Xna.Framework.Audio;
+using System.Text.RegularExpressions;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace ToyConEngine
 {
@@ -21,12 +25,13 @@ namespace ToyConEngine
     {
         public string Name { get; set; }
         public Node ParentNode { get; set; }
-        public OutputPort ConnectedSource { get; set; }
+        public List<OutputPort> ConnectedSources { get; set; } = new List<OutputPort>();
 
         public float GetValue()
         {
             // If nothing is connected, return default (0)
-            return ConnectedSource?.Value ?? 0.0f;
+            if (ConnectedSources.Count == 0) return 0.0f;
+            return ConnectedSources.Max(s => s.Value);
         }
     }
 
@@ -82,30 +87,55 @@ namespace ToyConEngine
     // A Math Node (Add, Subtract, Multiply)
     public class MathNode : Node
     {
-        public enum Operation { Add, Subtract, Multiply, Divide }
+        public enum Operation { Add, Subtract, Multiply, Divide, Abs, Select }
         public Operation Op { get; set; }
 
         public MathNode(Operation op)
         {
             Name = $"Math ({op})";
             Op = op;
-            AddInput("A");
-            AddInput("B");
+            if (op == Operation.Abs)
+            {
+                AddInput("A");
+            }
+            else if (op == Operation.Select)
+            {
+                AddInput("Cond");
+                AddInput("True");
+                AddInput("False");
+            }
+            else
+            {
+                AddInput("A");
+                AddInput("B");
+            }
             AddOutput("Result");
         }
 
         public override void Evaluate(GameTime gameTime)
         {
-            float a = Inputs[0].GetValue();
-            float b = Inputs[1].GetValue();
             float result = 0f;
 
-            switch (Op)
+            if (Op == Operation.Abs)
             {
-                case Operation.Add: result = a + b; break;
-                case Operation.Subtract: result = a - b; break;
-                case Operation.Multiply: result = a * b; break;
-                case Operation.Divide: result = (Math.Abs(b) > 0.001f) ? a / b : 0f; break;
+                result = Math.Abs(Inputs[0].GetValue());
+            }
+            else if (Op == Operation.Select)
+            {
+                float cond = Inputs[0].GetValue();
+                result = (Math.Abs(cond) > 0.001f) ? Inputs[1].GetValue() : Inputs[2].GetValue();
+            }
+            else
+            {
+                float a = Inputs[0].GetValue();
+                float b = Inputs[1].GetValue();
+                switch (Op)
+                {
+                    case Operation.Add: result = a + b; break;
+                    case Operation.Subtract: result = a - b; break;
+                    case Operation.Multiply: result = a * b; break;
+                    case Operation.Divide: result = (Math.Abs(b) > 0.001f) ? a / b : 0f; break;
+                }
             }
 
             Outputs[0].SetValue(result);
@@ -115,7 +145,7 @@ namespace ToyConEngine
     // A Logic Node (AND, NOT)
     public class LogicNode : Node
     {
-        public enum LogicType { And, Not, GreaterThan, Or, Xor }
+        public enum LogicType { And, Not, GreaterThan, LessThan, Or, Xor }
         public LogicType Type { get; set; }
 
         public LogicNode(LogicType type)
@@ -150,6 +180,10 @@ namespace ToyConEngine
                 case LogicType.GreaterThan:
                     float c = Inputs[1].GetValue();
                     result = (a > c) ? 1.0f : 0.0f;
+                    break;
+                case LogicType.LessThan:
+                    float f = Inputs[1].GetValue();
+                    result = (a < f) ? 1.0f : 0.0f;
                     break;
                 case LogicType.Or:
                     float d = Inputs[1].GetValue();
@@ -324,6 +358,7 @@ namespace ToyConEngine
     public class BeepOutputNode : Node
     {
         public bool ShouldPlay { get; private set; }
+        public string SoundName { get; set; } = "Beep";
         public float Pitch { get; private set; }
         public float Volume { get; private set; }
         private bool _lastTriggerState = false;
@@ -340,6 +375,12 @@ namespace ToyConEngine
         {
             ShouldPlay = false; // Reset every frame
             bool currentTrigger = Inputs[0].GetValue() > 0.5f;
+
+            Pitch = Math.Clamp(Inputs[1].GetValue(), -1.0f, 1.0f);
+            if (Inputs[2].ConnectedSources.Count > 0)
+                Volume = Math.Clamp(Inputs[2].GetValue(), 0.0f, 1.0f);
+            else
+                Volume = 1.0f;
 
             if (currentTrigger && !_lastTriggerState)
             {
@@ -375,7 +416,8 @@ namespace ToyConEngine
         {
             var sourcePort = sourceNode.Outputs[sourceIndex];
             var targetPort = targetNode.Inputs[targetIndex];
-            targetPort.ConnectedSource = sourcePort;
+            if (!targetPort.ConnectedSources.Contains(sourcePort))
+                targetPort.ConnectedSources.Add(sourcePort);
         }
 
         // The "Game Loop"
@@ -399,7 +441,7 @@ namespace ToyConEngine
         private SpriteBatch _spriteBatch;
         private Texture2D _pixel; // Used for drawing lines and rectangles
         private SpriteFont _font;
-        private SoundEffect _beepSound;
+        private List<string> _availableSounds = new List<string>();
 
         private GraphEngine _engine;
 
@@ -476,12 +518,29 @@ namespace ToyConEngine
             try
             {
                 _font = Content.Load<SpriteFont>("Font");
-                _beepSound = Content.Load<SoundEffect>("Beep");
             }
             catch
             {
                 // Font or sound not found
             }
+
+            // Scan for sounds
+            var contentDir = new DirectoryInfo(Content.RootDirectory);
+            if (contentDir.Exists)
+            {
+                foreach (var file in contentDir.GetFiles("*.xnb"))
+                {
+                    string assetName = Path.GetFileNameWithoutExtension(file.Name);
+                    try
+                    {
+                        // Try to load as SoundEffect to verify type
+                        Content.Load<SoundEffect>(assetName);
+                        _availableSounds.Add(assetName);
+                    }
+                    catch { }
+                }
+            }
+            if (_availableSounds.Count == 0) _availableSounds.Add("Beep");
         }
 
         protected override void Update(GameTime gameTime)
@@ -511,14 +570,16 @@ namespace ToyConEngine
             _engine.Tick(gameTime);
 
             // 2. Handle Audio Outputs
-            if (_beepSound != null)
+            foreach (var node in _engine.Nodes)
             {
-                foreach (var node in _engine.Nodes)
+                if (node is BeepOutputNode beepNode && beepNode.ShouldPlay)
                 {
-                    if (node is BeepOutputNode beepNode && beepNode.ShouldPlay)
+                    try
                     {
-                        _beepSound.Play(beepNode.Volume, beepNode.Pitch, 0);
+                        var sfx = Content.Load<SoundEffect>(beepNode.SoundName);
+                        sfx.Play(beepNode.Volume, beepNode.Pitch, 0);
                     }
+                    catch { }
                 }
             }
 
@@ -635,15 +696,16 @@ namespace ToyConEngine
                             for (int i = 0; i < node.Inputs.Count; i++)
                             {
                                 var input = node.Inputs[i];
-                                if (input.ConnectedSource != null)
+                                for (int j = input.ConnectedSources.Count - 1; j >= 0; j--)
                                 {
-                                    var startNode = input.ConnectedSource.ParentNode;
-                                    int outputIndex = startNode.Outputs.IndexOf(input.ConnectedSource);
+                                    var source = input.ConnectedSources[j];
+                                    var startNode = source.ParentNode;
+                                    int outputIndex = startNode.Outputs.IndexOf(source);
                                     Vector2 startPos = GetOutputPosition(startNode, outputIndex);
                                     Vector2 endPos = GetInputPosition(node, i);
                                     if (GetDistanceFromLineSegment(mousePos.ToVector2(), startPos, endPos) < 8f)
                                     {
-                                        input.ConnectedSource = null;
+                                        input.ConnectedSources.RemoveAt(j);
                                         doubleClickHandled = true;
                                         break;
                                     }
@@ -705,12 +767,12 @@ namespace ToyConEngine
                 for (int i = 0; i < node.Inputs.Count; i++)
                 {
                     var input = node.Inputs[i];
-                    if (input.ConnectedSource != null)
+                    foreach (var source in input.ConnectedSources)
                     {
-                        var startNode = input.ConnectedSource.ParentNode;
+                        var startNode = source.ParentNode;
                         var endNode = node;
 
-                        int outputIndex = startNode.Outputs.IndexOf(input.ConnectedSource);
+                        int outputIndex = startNode.Outputs.IndexOf(source);
                         Vector2 startPos = GetOutputPosition(startNode, outputIndex);
                         Vector2 endPos = GetInputPosition(endNode, i);
 
@@ -721,7 +783,7 @@ namespace ToyConEngine
                         if (_font != null)
                         {
                             Vector2 mid = (startPos + endPos) / 2;
-                            string val = input.ConnectedSource.Value.ToString("0.00");
+                            string val = source.Value.ToString("0.00");
                             _spriteBatch.DrawString(_font, val, mid - new Vector2(0, 15), Color.White);
                         }
                     }
@@ -883,6 +945,8 @@ namespace ToyConEngine
 
         private void HandleScriptInput(KeyboardState current, ref string buffer)
         {
+            bool ctrl = current.IsKeyDown(Keys.LeftControl) || current.IsKeyDown(Keys.RightControl);
+
             foreach (Keys key in current.GetPressedKeys())
             {
                 if (!_prevKeyboardState.IsKeyDown(key))
@@ -893,7 +957,11 @@ namespace ToyConEngine
                         buffer += "\n";
                     else if (key == Keys.Space)
                         buffer += " ";
-                    else
+                    else if (ctrl && key == Keys.V)
+                    {
+                        buffer += GetClipboard();
+                    }
+                    else if (!ctrl)
                     {
                         char? c = ScriptKeyToChar(key, current.IsKeyDown(Keys.LeftShift) || current.IsKeyDown(Keys.RightShift));
                         if (c.HasValue) buffer += c.Value;
@@ -904,75 +972,221 @@ namespace ToyConEngine
 
         private void ParseAndGenerateGraph(string script)
         {
-            var lines = script.Split(new[] { '\r', '\n', ';' }, StringSplitOptions.RemoveEmptyEntries);
+            _engine.Nodes.Clear();
+            _nodeRects.Clear();
+            _connectionStartNode = null;
+
+            // Tokenize
+            string pattern = @"([(){},;=+\-*/><&|^!]+|\s+|[A-Za-z_][A-Za-z0-9_]*|[0-9.]+)";
+            var tokens = Regex.Split(script, pattern)
+                              .Where(t => !string.IsNullOrWhiteSpace(t))
+                              .ToList();
+
             var variables = new Dictionary<string, Node>();
             int currentY = 100;
             int currentX = 100;
+            int tokenIndex = 0;
 
-            foreach (var line in lines)
+            void Spawn(Node n)
             {
-                try
+                SpawnNodeAt(n, currentX, currentY);
+                currentY += 80;
+                if (currentY > 400) { currentY = 100; currentX += 200; }
+            }
+
+            try
+            {
+                ParseBlock(tokens, ref tokenIndex, variables, null, Spawn);
+            }
+            catch { }
+        }
+
+        private void ParseBlock(List<string> tokens, ref int index, Dictionary<string, Node> variables, Node conditionNode, Action<Node> spawner)
+        {
+            while (index < tokens.Count)
+            {
+                string t = tokens[index];
+
+                if (t == "}")
                 {
-                    var parts = line.Trim().Split(' ');
-                    if (parts.Length < 3) continue;
-
-                    var pList = parts.ToList();
-                    if (pList[0] == "var" || pList[0] == "int" || pList[0] == "float") pList.RemoveAt(0);
-                    parts = pList.ToArray();
-
-                    if (parts.Length < 3 || parts[1] != "=") continue;
-
-                    string targetVar = parts[0];
-                    Node createdNode = null;
-
-                    if (parts.Length == 5) // a = b + c
+                    index++;
+                    return;
+                }
+                else if (t == "var" || t == "int" || t == "float")
+                {
+                    index++;
+                    string name = tokens[index++];
+                    if (tokens[index] == "=")
                     {
-                        string op1 = parts[2];
-                        string op = parts[3];
-                        string op2 = parts[4];
-
-                        MathNode.Operation? mathOp = null;
-                        if (op == "+") mathOp = MathNode.Operation.Add;
-                        if (op == "-") mathOp = MathNode.Operation.Subtract;
-                        if (op == "*") mathOp = MathNode.Operation.Multiply;
-                        if (op == "/") mathOp = MathNode.Operation.Divide;
-
-                        if (mathOp.HasValue)
-                        {
-                            var mathNode = new MathNode(mathOp.Value);
-                            createdNode = mathNode;
-
-                            if (variables.ContainsKey(op1)) _engine.Connect(variables[op1], 0, mathNode, 0);
-                            else if (float.TryParse(op1, out float val1)) { var c = new ConstantNode(val1); SpawnNodeAt(c, currentX - 150, currentY); _engine.Connect(c, 0, mathNode, 0); }
-
-                            if (variables.ContainsKey(op2)) _engine.Connect(variables[op2], 0, mathNode, 1);
-                            else if (float.TryParse(op2, out float val2)) { var c = new ConstantNode(val2); SpawnNodeAt(c, currentX - 150, currentY + 50); _engine.Connect(c, 0, mathNode, 1); }
-                        }
+                        index++;
+                        Node valNode = ParseExpression(tokens, ref index, variables, spawner);
+                        variables[name] = valNode;
                     }
-                    else if (parts.Length == 3) // a = 5
+                    if (index < tokens.Count && tokens[index] == ";") index++;
+                }
+                else if (t == "if")
+                {
+                    index++;
+                    if (tokens[index] == "(") index++;
+                    Node cond = ParseExpression(tokens, ref index, variables, spawner);
+                    if (tokens[index] == ")") index++;
+
+                    Node effectiveCond = cond;
+                    if (conditionNode != null)
                     {
-                        if (float.TryParse(parts[2], out float val))
-                        {
-                            createdNode = new ConstantNode(val);
-                        }
-                        else if (variables.ContainsKey(parts[2]))
-                        {
-                            var mathNode = new MathNode(MathNode.Operation.Add); // Identity
-                            createdNode = mathNode;
-                            _engine.Connect(variables[parts[2]], 0, mathNode, 0);
-                        }
+                        var andNode = new LogicNode(LogicNode.LogicType.And);
+                        spawner(andNode);
+                        _engine.Connect(conditionNode, 0, andNode, 0);
+                        _engine.Connect(cond, 0, andNode, 1);
+                        effectiveCond = andNode;
                     }
 
-                    if (createdNode != null)
+                    if (tokens[index] == "{")
                     {
-                        createdNode.Name = targetVar;
-                        variables[targetVar] = createdNode;
-                        SpawnNodeAt(createdNode, currentX, currentY);
-                        currentY += 100;
-                        if (currentY > 400) { currentY = 100; currentX += 200; }
+                        index++;
+                        ParseBlock(tokens, ref index, variables, effectiveCond, spawner);
                     }
                 }
-                catch { }
+                else if (t == "new")
+                {
+                    index++;
+                    string typeName = tokens[index++];
+                    if (tokens[index] == "(") index++;
+                    var args = ParseArguments(tokens, ref index, variables, spawner);
+                    if (index < tokens.Count && tokens[index] == ";") index++;
+                    CreateNode(typeName, args, conditionNode, spawner);
+                }
+                else if (IsIdentifier(t) && index + 1 < tokens.Count && tokens[index + 1] == "(")
+                {
+                    string funcName = tokens[index++];
+                    index++;
+                    var args = ParseArguments(tokens, ref index, variables, spawner);
+                    if (index < tokens.Count && tokens[index] == ";") index++;
+                    CreateNode(funcName, args, conditionNode, spawner);
+                }
+                else if (IsIdentifier(t) && index + 1 < tokens.Count && tokens[index + 1] == "=")
+                {
+                    string name = tokens[index++];
+                    index++;
+                    Node valNode = ParseExpression(tokens, ref index, variables, spawner);
+
+                    if (conditionNode != null && variables.ContainsKey(name))
+                    {
+                        var selectNode = new MathNode(MathNode.Operation.Select);
+                        spawner(selectNode);
+                        _engine.Connect(conditionNode, 0, selectNode, 0);
+                        _engine.Connect(valNode, 0, selectNode, 1);
+                        _engine.Connect(variables[name], 0, selectNode, 2);
+                        variables[name] = selectNode;
+                    }
+                    else
+                    {
+                        variables[name] = valNode;
+                    }
+
+                    if (index < tokens.Count && tokens[index] == ";") index++;
+                }
+                else
+                {
+                    index++;
+                }
+            }
+        }
+
+        private bool IsIdentifier(string s) => char.IsLetter(s[0]) || s[0] == '_';
+
+        private List<Node> ParseArguments(List<string> tokens, ref int index, Dictionary<string, Node> variables, Action<Node> spawner)
+        {
+            var args = new List<Node>();
+            while (index < tokens.Count && tokens[index] != ")")
+            {
+                args.Add(ParseExpression(tokens, ref index, variables, spawner));
+                if (tokens[index] == ",") index++;
+            }
+            if (index < tokens.Count) index++;
+            return args;
+        }
+
+        private Node ParseExpression(List<string> tokens, ref int index, Dictionary<string, Node> variables, Action<Node> spawner)
+        {
+            Node left = ParseTerm(tokens, ref index, variables, spawner);
+
+            while (index < tokens.Count)
+            {
+                string op = tokens[index];
+                if (op == "+" || op == "-" || op == "*" || op == "/" || op == ">" || op == "<")
+                {
+                    index++;
+                    Node right = ParseTerm(tokens, ref index, variables, spawner);
+
+                    Node opNode = null;
+                    if (op == "+") opNode = new MathNode(MathNode.Operation.Add);
+                    if (op == "-") opNode = new MathNode(MathNode.Operation.Subtract);
+                    if (op == "*") opNode = new MathNode(MathNode.Operation.Multiply);
+                    if (op == "/") opNode = new MathNode(MathNode.Operation.Divide);
+                    if (op == ">") opNode = new LogicNode(LogicNode.LogicType.GreaterThan);
+                    if (op == "<") opNode = new LogicNode(LogicNode.LogicType.LessThan);
+
+                    spawner(opNode);
+                    _engine.Connect(left, 0, opNode, 0);
+                    _engine.Connect(right, 0, opNode, 1);
+                    left = opNode;
+                }
+                else break;
+            }
+            return left;
+        }
+
+        private Node ParseTerm(List<string> tokens, ref int index, Dictionary<string, Node> variables, Action<Node> spawner)
+        {
+            string t = tokens[index++];
+            if (float.TryParse(t, out float val))
+            {
+                var c = new ConstantNode(val);
+                spawner(c);
+                return c;
+            }
+            if (variables.ContainsKey(t)) return variables[t];
+            if (t == "abs" && tokens[index] == "(")
+            {
+                index++;
+                Node arg = ParseExpression(tokens, ref index, variables, spawner);
+                if (tokens[index] == ")") index++;
+                var absNode = new MathNode(MathNode.Operation.Abs);
+                spawner(absNode);
+                _engine.Connect(arg, 0, absNode, 0);
+                return absNode;
+            }
+            if (t == "(")
+            {
+                Node n = ParseExpression(tokens, ref index, variables, spawner);
+                if (tokens[index] == ")") index++;
+                return n;
+            }
+            return new ConstantNode(0);
+        }
+
+        private void CreateNode(string name, List<Node> args, Node condition, Action<Node> spawner)
+        {
+            Node n = null;
+            if (name == "beep")
+            {
+                var b = new BeepOutputNode();
+                n = b;
+                spawner(n);
+                if (condition != null) _engine.Connect(condition, 0, n, 0);
+                else { var c = new ConstantNode(1); spawner(c); _engine.Connect(c, 0, n, 0); }
+                if (args.Count > 0) _engine.Connect(args[0], 0, n, 1);
+                if (args.Count > 1) _engine.Connect(args[1], 0, n, 2);
+            }
+            else if (name == "ColorNode")
+            {
+                var c = new ColorOutputNode();
+                n = c;
+                spawner(n);
+                if (args.Count > 0) _engine.Connect(args[0], 0, n, 0);
+                if (args.Count > 1) _engine.Connect(args[1], 0, n, 1);
+                if (args.Count > 2) _engine.Connect(args[2], 0, n, 2);
             }
         }
 
@@ -1171,6 +1385,34 @@ namespace ToyConEngine
             else if (_inspectedNode is BeepOutputNode beepNode)
             {
                 if (_font != null) _spriteBatch.DrawString(_font, $"Vol:{beepNode.Volume:0.0} Pitch:{beepNode.Pitch:0.0}", new Vector2(x, y), Color.White);
+
+                y += 30;
+                Rectangle prevRect = new Rectangle(x, y, 30, 30);
+                Rectangle nextRect = new Rectangle(x + 200, y, 30, 30);
+
+                _spriteBatch.Draw(_pixel, prevRect, Color.Gray);
+                _spriteBatch.Draw(_pixel, nextRect, Color.Gray);
+
+                if (_font != null)
+                {
+                    _spriteBatch.DrawString(_font, "<", new Vector2(x + 10, y + 5), Color.White);
+                    _spriteBatch.DrawString(_font, beepNode.SoundName, new Vector2(x + 40, y + 5), Color.White);
+                    _spriteBatch.DrawString(_font, ">", new Vector2(x + 210, y + 5), Color.White);
+                }
+
+                if (clicked)
+                {
+                    int idx = _availableSounds.IndexOf(beepNode.SoundName);
+                    if (idx == -1) idx = 0;
+
+                    if (prevRect.Contains(mousePos)) idx--;
+                    if (nextRect.Contains(mousePos)) idx++;
+
+                    if (idx < 0) idx = _availableSounds.Count - 1;
+                    if (idx >= _availableSounds.Count) idx = 0;
+
+                    beepNode.SoundName = _availableSounds[idx];
+                }
             }
             else if (_inspectedNode is ScriptImporterNode scriptNode)
             {
@@ -1204,6 +1446,26 @@ namespace ToyConEngine
             }
         }
 
+        private string GetClipboard()
+        {
+            try
+            {
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    var psi = new ProcessStartInfo("powershell", "-command \"Get-Clipboard\"");
+                    psi.UseShellExecute = false;
+                    psi.RedirectStandardOutput = true;
+                    psi.CreateNoWindow = true;
+                    using var p = Process.Start(psi);
+                    string text = p.StandardOutput.ReadToEnd();
+                    p.WaitForExit();
+                    return text.TrimEnd();
+                }
+            }
+            catch { }
+            return "";
+        }
+
         private char? KeyToChar(Keys key)
         {
             if (key >= Keys.D0 && key <= Keys.D9) return (char)('0' + (key - Keys.D0));
@@ -1230,8 +1492,8 @@ namespace ToyConEngine
             }
             if (key == Keys.OemPlus || key == Keys.Add) return shift ? '+' : '=';
             if (key == Keys.OemMinus || key == Keys.Subtract) return shift ? '_' : '-';
-            if (key == Keys.OemPeriod) return '.';
-            if (key == Keys.OemComma) return ',';
+            if (key == Keys.OemPeriod) return shift ? '>' : '.';
+            if (key == Keys.OemComma) return shift ? '<' : ',';
             if (key == Keys.OemSemicolon) return ';';
             if (key == Keys.OemQuestion) return shift ? '?' : '/';
             return null;
@@ -1249,8 +1511,7 @@ namespace ToyConEngine
             {
                 foreach (var input in n.Inputs)
                 {
-                    if (input.ConnectedSource != null && input.ConnectedSource.ParentNode == node)
-                        input.ConnectedSource = null;
+                    input.ConnectedSources.RemoveAll(s => s.ParentNode == node);
                 }
             }
         }
