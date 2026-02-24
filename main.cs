@@ -170,7 +170,7 @@ namespace ToyConEngine
     // A Timer Node
     public class TimerNode : Node
     {
-        private float _elapsedTime = 0f;
+        public float ElapsedTime { get; set; } = 0f;
 
         public TimerNode()
         {
@@ -180,15 +180,15 @@ namespace ToyConEngine
 
         public override void Evaluate(GameTime gameTime)
         {
-            _elapsedTime += (float)gameTime.ElapsedGameTime.TotalSeconds;
-            Outputs[0].SetValue(_elapsedTime);
+            ElapsedTime += (float)gameTime.ElapsedGameTime.TotalSeconds;
+            Outputs[0].SetValue(ElapsedTime);
         }
     }
 
     // A Counter Node
     public class CounterNode : Node
     {
-        private float _value = 0;
+        public float Value { get; set; } = 0;
         private bool _lastCountUpState = false;
         private bool _lastCountDownState = false;
 
@@ -209,17 +209,17 @@ namespace ToyConEngine
 
             if (reset)
             {
-                _value = 0;
+                Value = 0;
             }
             else
             {
-                if (countUp && !_lastCountUpState) _value++;
-                if (countDown && !_lastCountDownState) _value--;
+                if (countUp && !_lastCountUpState) Value++;
+                if (countDown && !_lastCountDownState) Value--;
             }
 
             _lastCountUpState = countUp;
             _lastCountDownState = countDown;
-            Outputs[0].SetValue(_value);
+            Outputs[0].SetValue(Value);
         }
     }
 
@@ -244,6 +244,7 @@ namespace ToyConEngine
     public class ButtonNode : Node
     {
         public bool IsPressed { get; set; }
+        public bool IsToggle { get; set; }
 
         public ButtonNode()
         {
@@ -475,7 +476,15 @@ namespace ToyConEngine
             {
                 if (kvp.Key is ButtonNode btnNode)
                 {
-                    btnNode.IsPressed = kvp.Value.Contains(mousePos) && mouseState.LeftButton == ButtonState.Pressed;
+                    if (btnNode.IsToggle)
+                    {
+                        if (kvp.Value.Contains(mousePos) && mouseState.LeftButton == ButtonState.Pressed && _prevMouseState.LeftButton == ButtonState.Released)
+                            btnNode.IsPressed = !btnNode.IsPressed;
+                    }
+                    else
+                    {
+                        btnNode.IsPressed = kvp.Value.Contains(mousePos) && mouseState.LeftButton == ButtonState.Pressed;
+                    }
                 }
             }
 
@@ -899,6 +908,23 @@ namespace ToyConEngine
                     kNode.Name = $"Key ({kNode.Key})";
                 }
             }
+            else if (_inspectedNode is TimerNode tNode)
+            {
+                Rectangle resetRect = new Rectangle(x, y, 100, 30);
+                if (resetRect.Contains(mousePos)) tNode.ElapsedTime = 0;
+            }
+            else if (_inspectedNode is CounterNode cntNode)
+            {
+                Rectangle minusRect = new Rectangle(x, y, 30, 30);
+                Rectangle plusRect = new Rectangle(x + 100, y, 30, 30);
+                if (minusRect.Contains(mousePos)) cntNode.Value--;
+                if (plusRect.Contains(mousePos)) cntNode.Value++;
+            }
+            else if (_inspectedNode is ButtonNode btnNode)
+            {
+                Rectangle toggleRect = new Rectangle(x, y, 200, 30);
+                if (toggleRect.Contains(mousePos)) btnNode.IsToggle = !btnNode.IsToggle;
+            }
         }
 
         private void DrawOverlay()
@@ -941,6 +967,36 @@ namespace ToyConEngine
             {
                 _spriteBatch.Draw(_pixel, new Rectangle(x, y, 200, 30), Color.Gray);
                 if (_font != null) _spriteBatch.DrawString(_font, "Key: " + kNode.Key.ToString(), new Vector2(x + 10, y + 5), Color.White);
+            }
+            else if (_inspectedNode is TimerNode tNode)
+            {
+                _spriteBatch.Draw(_pixel, new Rectangle(x, y, 100, 30), Color.Gray);
+                if (_font != null) _spriteBatch.DrawString(_font, "Reset", new Vector2(x + 10, y + 5), Color.White);
+                if (_font != null) _spriteBatch.DrawString(_font, tNode.ElapsedTime.ToString("0.00") + "s", new Vector2(x + 110, y + 5), Color.White);
+            }
+            else if (_inspectedNode is CounterNode cntNode)
+            {
+                _spriteBatch.Draw(_pixel, new Rectangle(x, y, 30, 30), Color.Gray);
+                _spriteBatch.Draw(_pixel, new Rectangle(x + 100, y, 30, 30), Color.Gray);
+                if (_font != null)
+                {
+                    _spriteBatch.DrawString(_font, "-", new Vector2(x + 10, y + 5), Color.White);
+                    _spriteBatch.DrawString(_font, cntNode.Value.ToString("0"), new Vector2(x + 40, y + 5), Color.White);
+                    _spriteBatch.DrawString(_font, "+", new Vector2(x + 110, y + 5), Color.White);
+                }
+            }
+            else if (_inspectedNode is ButtonNode btnNode)
+            {
+                _spriteBatch.Draw(_pixel, new Rectangle(x, y, 200, 30), btnNode.IsToggle ? Color.Green : Color.Gray);
+                if (_font != null) _spriteBatch.DrawString(_font, "Toggle Mode: " + (btnNode.IsToggle ? "ON" : "OFF"), new Vector2(x + 10, y + 5), Color.White);
+            }
+            else if (_inspectedNode is ColorOutputNode colNode)
+            {
+                if (_font != null) _spriteBatch.DrawString(_font, $"R:{colNode.DisplayColor.R} G:{colNode.DisplayColor.G} B:{colNode.DisplayColor.B}", new Vector2(x, y), Color.White);
+            }
+            else if (_inspectedNode is BeepOutputNode beepNode)
+            {
+                if (_font != null) _spriteBatch.DrawString(_font, $"Vol:{beepNode.Volume:0.0} Pitch:{beepNode.Pitch:0.0}", new Vector2(x, y), Color.White);
             }
         }
 
