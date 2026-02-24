@@ -443,12 +443,23 @@ namespace ToyConEngine
         private SpriteFont _font;
         private List<string> _availableSounds = new List<string>();
 
+        // Selection & Clipboard
+        private List<Node> _selectedNodes = new List<Node>();
+        private bool _isSelecting = false;
+        private Point _selectionStart;
+        private Rectangle _selectionRect;
+        private List<Node> _clipboardNodes = new List<Node>();
+        // We need to store connections for clipboard. 
+        // Since we clone nodes, we need to know which input index connects to which output index of which node index in the list.
+        private class ConnectionData { public int TargetNodeIdx; public int TargetInputIdx; public int SourceNodeIdx; public int SourceOutputIdx; }
+        private List<ConnectionData> _clipboardConnections = new List<ConnectionData>();
+
         private GraphEngine _engine;
 
         // Visual State
         private Dictionary<Node, Rectangle> _nodeRects = new Dictionary<Node, Rectangle>();
-        private Node _draggedNode = null;
-        private Point _dragOffset;
+        private bool _isDraggingNodes = false;
+        private Point _lastMousePos;
         private KeyboardState _prevKeyboardState;
         private MouseState _prevMouseState;
 
@@ -548,6 +559,7 @@ namespace ToyConEngine
             ClientBounds = Window.ClientBounds;
             var mouseState = Mouse.GetState();
             var mousePos = mouseState.Position;
+            var keyboardState = Keyboard.GetState();
 
             // Update ButtonNodes
             foreach (var kvp in _nodeRects)
@@ -584,30 +596,14 @@ namespace ToyConEngine
             }
 
             // 3. Input Handling (Drag and Drop)
-            var keyboardState = Keyboard.GetState();
             bool clicked = mouseState.LeftButton == ButtonState.Pressed && _prevMouseState.LeftButton == ButtonState.Released;
             bool rightClicked = mouseState.RightButton == ButtonState.Pressed && _prevMouseState.RightButton == ButtonState.Released;
 
-            if (rightClicked)
-            {
-                double now = gameTime.TotalGameTime.TotalSeconds;
-                if (now - _lastRightClickTime < DoubleClickTime)
-                {
-                    Node nodeToDelete = null;
-                    foreach (var kvp in _nodeRects)
-                    {
-                        if (kvp.Value.Contains(mousePos))
-                        {
-                            nodeToDelete = kvp.Key;
-                            break;
-                        }
-                    }
-                    if (nodeToDelete != null) DeleteNode(nodeToDelete);
-                    _lastRightClickTime = 0;
-                }
-                else
-                    _lastRightClickTime = now;
-            }
+            // Shortcuts
+            bool ctrl = keyboardState.IsKeyDown(Keys.LeftControl) || keyboardState.IsKeyDown(Keys.RightControl);
+            if (IsKeyPressed(keyboardState, Keys.Delete)) DeleteSelectedNodes();
+            if (ctrl && IsKeyPressed(keyboardState, Keys.C)) CopyNodes();
+            if (ctrl && IsKeyPressed(keyboardState, Keys.V)) PasteNodes();
 
             if (_inspectedNode != null)
             {
@@ -673,19 +669,33 @@ namespace ToyConEngine
                 if (now - _lastClickTime < DoubleClickTime)
                 {
                     bool doubleClickHandled = false;
-                    // Check Nodes (Inspection)
+                    // Check Nodes (Inspection) - Only if single node selected or all same type
                     foreach (var kvp in _nodeRects)
                     {
                         if (kvp.Value.Contains(mousePos))
                         {
-                            _inspectedNode = kvp.Key;
-                            _inputValueBuffer = "";
-                            if (_inspectedNode is ConstantNode c) _inputValueBuffer = c.StoredValue.ToString();
-                            if (_inspectedNode is CounterNode cnt) _inputValueBuffer = cnt.Value.ToString();
-                            if (_inspectedNode is ScriptImporterNode sn) _inputValueBuffer = sn.Script;
-                            _draggedNode = null;
-                            doubleClickHandled = true;
-                            break;
+                            // If we double click a node, ensure it is selected
+                            if (!_selectedNodes.Contains(kvp.Key))
+                            {
+                                _selectedNodes.Clear();
+                                _selectedNodes.Add(kvp.Key);
+                            }
+
+                            // Check if all selected nodes are same type
+                            bool allSame = true;
+                            Type firstType = _selectedNodes[0].GetType();
+                            foreach(var n in _selectedNodes) if(n.GetType() != firstType) allSame = false;
+
+                            if (allSame)
+                            {
+                                _inspectedNode = _selectedNodes[0]; // Use first as representative
+                                _inputValueBuffer = "";
+                                if (_inspectedNode is ConstantNode c) _inputValueBuffer = c.StoredValue.ToString();
+                                if (_inspectedNode is CounterNode cnt) _inputValueBuffer = cnt.Value.ToString();
+                                if (_inspectedNode is ScriptImporterNode sn) _inputValueBuffer = sn.Script;
+                                doubleClickHandled = true;
+                            }
+                            break; 
                         }
                     }
                     // Check Wires (Deletion)
@@ -722,34 +732,85 @@ namespace ToyConEngine
                 }
             }
 
-            if (!uiCaptured && mouseState.LeftButton == ButtonState.Pressed)
+            // Selection and Dragging Logic
+            if (!uiCaptured)
             {
-                if (_draggedNode == null)
+                if (mouseState.LeftButton == ButtonState.Pressed && _prevMouseState.LeftButton == ButtonState.Released)
                 {
-                    // Hit Test
+                    // Clicked
+                    Node clickedNode = null;
                     foreach (var kvp in _nodeRects)
                     {
                         if (kvp.Value.Contains(mousePos))
                         {
-                            _draggedNode = kvp.Key;
-                            _dragOffset = mousePos - kvp.Value.Location;
+                            clickedNode = kvp.Key;
                             break;
                         }
+                    }
+                    if (clickedNode != null)
+                    {
+                        if (!_selectedNodes.Contains(clickedNode))
+                        {
+                            if (!ctrl) _selectedNodes.Clear();
+                            _selectedNodes.Add(clickedNode);
+                        }
+                        else if (ctrl)
+                        {
+                            _selectedNodes.Remove(clickedNode);
+                        }
+                        _isDraggingNodes = true;
+                    }
+                    else
+                    {
+                        // Start Selection Box
+                        _isSelecting = true;
+                        _selectionStart = mousePos;
+                        _selectionRect = new Rectangle(mousePos.X, mousePos.Y, 0, 0);
+                        if (!ctrl) _selectedNodes.Clear();
+                    }
+                }
+                else if (mouseState.LeftButton == ButtonState.Pressed)
+                {
+                    // Dragging
+                    if (_isDraggingNodes)
+                    {
+                        Point delta = mousePos - _lastMousePos;
+                        foreach (var node in _selectedNodes)
+                        {
+                            var r = _nodeRects[node];
+                            r.Location += delta;
+                            _nodeRects[node] = r;
+                        }
+                    }
+                    else if (_isSelecting)
+                    {
+                        int x = Math.Min(_selectionStart.X, mousePos.X);
+                        int y = Math.Min(_selectionStart.Y, mousePos.Y);
+                        int w = Math.Abs(_selectionStart.X - mousePos.X);
+                        int h = Math.Abs(_selectionStart.Y - mousePos.Y);
+                        _selectionRect = new Rectangle(x, y, w, h);
                     }
                 }
                 else
                 {
-                    // Dragging
-                    var rect = _nodeRects[_draggedNode];
-                    rect.Location = mousePos - _dragOffset;
-                    _nodeRects[_draggedNode] = rect;
+                    // Released
+                    if (_isSelecting)
+                    {
+                        foreach (var kvp in _nodeRects)
+                        {
+                            if (_selectionRect.Intersects(kvp.Value))
+                            {
+                                if (!_selectedNodes.Contains(kvp.Key)) _selectedNodes.Add(kvp.Key);
+                            }
+                        }
+                        _isSelecting = false;
+                        _selectionRect = Rectangle.Empty;
+                    }
+                    _isDraggingNodes = false;
                 }
             }
-            else
-            {
-                _draggedNode = null;
-            }
 
+            _lastMousePos = mousePos;
             _prevKeyboardState = keyboardState;
             _prevMouseState = mouseState;
             base.Update(gameTime);
@@ -797,7 +858,7 @@ namespace ToyConEngine
                 var rect = kvp.Value;
 
                 // Color code based on type
-                Color color = Color.Gray;
+                Color color = _selectedNodes.Contains(node) ? Color.Lerp(Color.Gray, Color.White, 0.5f) : Color.Gray;
                 if (node is MathNode) color = Color.RoyalBlue;
                 if (node is LogicNode) color = Color.Crimson;
                 if (node is ConstantNode) color = Color.ForestGreen;
@@ -809,10 +870,13 @@ namespace ToyConEngine
                 }
                 if (node is BeepOutputNode) color = Color.HotPink;
 
+                if (_selectedNodes.Contains(node))
+                    color = Color.Lerp(color, Color.White, 0.3f);
+
                 _spriteBatch.Draw(_pixel, rect, color);
 
                 // Border
-                DrawHollowRect(_spriteBatch, rect, Color.White);
+                DrawHollowRect(_spriteBatch, rect, _selectedNodes.Contains(node) ? Color.Yellow : Color.White, _selectedNodes.Contains(node) ? 3 : 1);
 
                 // Draw Input Ports
                 for (int i = 0; i < node.Inputs.Count; i++)
@@ -844,6 +908,13 @@ namespace ToyConEngine
                 Vector2 startPos = GetOutputPosition(_connectionStartNode, _connectionStartIndex);
                 Vector2 endPos = Mouse.GetState().Position.ToVector2();
                 DrawLine(_spriteBatch, startPos, endPos, Color.White, 2);
+            }
+
+            // Draw Selection Box
+            if (_isSelecting)
+            {
+                _spriteBatch.Draw(_pixel, _selectionRect, new Color(255, 255, 255, 50));
+                DrawHollowRect(_spriteBatch, _selectionRect, Color.White);
             }
 
             DrawUI();
@@ -1222,31 +1293,47 @@ namespace ToyConEngine
 
                 if (clicked && minusRect.Contains(mousePos))
                 {
-                    cNode.StoredValue = (float)Math.Floor(cNode.StoredValue - 1.0f);
+                    foreach (var n in _selectedNodes.OfType<ConstantNode>()) n.StoredValue -= 0.1f;
                     _inputValueBuffer = cNode.StoredValue.ToString();
                 }
                 if (clicked && plusRect.Contains(mousePos))
                 {
-                    cNode.StoredValue = (float)Math.Floor(cNode.StoredValue + 1.0f);
+                    foreach (var n in _selectedNodes.OfType<ConstantNode>()) n.StoredValue += 0.1f;
                     _inputValueBuffer = cNode.StoredValue.ToString();
                 }
 
                 HandleTextInput(keyboard, ref _inputValueBuffer);
-                if (float.TryParse(_inputValueBuffer, out float val)) cNode.StoredValue = val;
+                if (float.TryParse(_inputValueBuffer, out float val)) foreach (var n in _selectedNodes.OfType<ConstantNode>()) n.StoredValue = val;
             }
             else if (_inspectedNode is MathNode mNode)
             {
                 Rectangle btnRect = new Rectangle(x, y, 200, 30);
-                if (clicked && btnRect.Contains(mousePos)) mNode.Op = (MathNode.Operation)(((int)mNode.Op + 1) % 4);
-                if (IsKeyPressed(keyboard, Keys.Right)) mNode.Op = (MathNode.Operation)(((int)mNode.Op + 1) % 4);
-                if (IsKeyPressed(keyboard, Keys.Left)) mNode.Op = (MathNode.Operation)(((int)mNode.Op + 3) % 4);
+                bool change = false;
+                int dir = 0;
+                if (clicked && btnRect.Contains(mousePos)) { change = true; dir = 1; }
+                if (IsKeyPressed(keyboard, Keys.Right)) { change = true; dir = 1; }
+                if (IsKeyPressed(keyboard, Keys.Left)) { change = true; dir = 3; }
+                
+                if (change)
+                {
+                    foreach (var n in _selectedNodes.OfType<MathNode>())
+                        n.Op = (MathNode.Operation)(((int)n.Op + dir) % 6); // 6 ops now
+                }
             }
             else if (_inspectedNode is LogicNode lNode)
             {
                 Rectangle btnRect = new Rectangle(x, y, 200, 30);
-                if (clicked && btnRect.Contains(mousePos)) lNode.Type = (LogicNode.LogicType)(((int)lNode.Type + 1) % 5);
-                if (IsKeyPressed(keyboard, Keys.Right)) lNode.Type = (LogicNode.LogicType)(((int)lNode.Type + 1) % 5);
-                if (IsKeyPressed(keyboard, Keys.Left)) lNode.Type = (LogicNode.LogicType)(((int)lNode.Type + 4) % 5);
+                bool change = false;
+                int dir = 0;
+                if (clicked && btnRect.Contains(mousePos)) { change = true; dir = 1; }
+                if (IsKeyPressed(keyboard, Keys.Right)) { change = true; dir = 1; }
+                if (IsKeyPressed(keyboard, Keys.Left)) { change = true; dir = 5; }
+
+                if (change)
+                {
+                    foreach (var n in _selectedNodes.OfType<LogicNode>())
+                        n.Type = (LogicNode.LogicType)(((int)n.Type + dir) % 6);
+                }
             }
             else if (_inspectedNode is KeyNode kNode)
             {
@@ -1256,8 +1343,7 @@ namespace ToyConEngine
                     Keys[] commonKeys = { Keys.Space, Keys.A, Keys.B, Keys.Up, Keys.Down, Keys.Left, Keys.Right, Keys.Enter, Keys.W, Keys.S };
                     int idx = Array.IndexOf(commonKeys, kNode.Key);
                     idx = (idx + 1) % commonKeys.Length;
-                    kNode.Key = commonKeys[idx];
-                    kNode.Name = $"Key ({kNode.Key})";
+                    foreach (var n in _selectedNodes.OfType<KeyNode>()) { n.Key = commonKeys[idx]; n.Name = $"Key ({n.Key})"; }
                 }
 
                 Keys[] pressed = keyboard.GetPressedKeys();
@@ -1265,8 +1351,7 @@ namespace ToyConEngine
                 {
                     if (!_prevKeyboardState.IsKeyDown(k) && k != Keys.Escape)
                     {
-                        kNode.Key = k;
-                        kNode.Name = $"Key ({kNode.Key})";
+                        foreach (var n in _selectedNodes.OfType<KeyNode>()) { n.Key = k; n.Name = $"Key ({n.Key})"; }
                         break;
                     }
                 }
@@ -1274,8 +1359,8 @@ namespace ToyConEngine
             else if (_inspectedNode is TimerNode tNode)
             {
                 Rectangle resetRect = new Rectangle(x, y, 100, 30);
-                if (clicked && resetRect.Contains(mousePos)) tNode.ElapsedTime = 0;
-                if (IsKeyPressed(keyboard, Keys.R)) tNode.ElapsedTime = 0;
+                if ((clicked && resetRect.Contains(mousePos)) || IsKeyPressed(keyboard, Keys.R))
+                    foreach (var n in _selectedNodes.OfType<TimerNode>()) n.ElapsedTime = 0;
             }
             else if (_inspectedNode is CounterNode cntNode)
             {
@@ -1283,23 +1368,23 @@ namespace ToyConEngine
                 Rectangle plusRect = new Rectangle(x + 100, y, 30, 30);
                 if (clicked && minusRect.Contains(mousePos))
                 {
-                    cntNode.Value--;
+                    foreach (var n in _selectedNodes.OfType<CounterNode>()) n.Value -= 0.1f;
                     _inputValueBuffer = cntNode.Value.ToString();
                 }
                 if (clicked && plusRect.Contains(mousePos))
                 {
-                    cntNode.Value++;
+                    foreach (var n in _selectedNodes.OfType<CounterNode>()) n.Value += 0.1f;
                     _inputValueBuffer = cntNode.Value.ToString();
                 }
 
                 HandleTextInput(keyboard, ref _inputValueBuffer);
-                if (float.TryParse(_inputValueBuffer, out float val)) cntNode.Value = val;
+                if (float.TryParse(_inputValueBuffer, out float val)) foreach (var n in _selectedNodes.OfType<CounterNode>()) n.Value = val;
             }
             else if (_inspectedNode is ButtonNode btnNode)
             {
                 Rectangle toggleRect = new Rectangle(x, y, 200, 30);
-                if (clicked && toggleRect.Contains(mousePos)) btnNode.IsToggle = !btnNode.IsToggle;
-                if (IsKeyPressed(keyboard, Keys.Space)) btnNode.IsToggle = !btnNode.IsToggle;
+                if ((clicked && toggleRect.Contains(mousePos)) || IsKeyPressed(keyboard, Keys.Space))
+                    foreach (var n in _selectedNodes.OfType<ButtonNode>()) n.IsToggle = !n.IsToggle;
             }
             else if (_inspectedNode is BeepOutputNode beepNode)
             {
@@ -1315,18 +1400,18 @@ namespace ToyConEngine
                     if (nextRect.Contains(mousePos)) idx++;
                     if (idx < 0) idx = _availableSounds.Count - 1;
                     if (idx >= _availableSounds.Count) idx = 0;
-                    beepNode.SoundName = _availableSounds[idx];
+                    foreach (var n in _selectedNodes.OfType<BeepOutputNode>()) n.SoundName = _availableSounds[idx];
                 }
             }
             else if (_inspectedNode is ScriptImporterNode scriptNode)
             {
                 HandleScriptInput(keyboard, ref _inputValueBuffer);
-                scriptNode.Script = _inputValueBuffer;
+                foreach (var n in _selectedNodes.OfType<ScriptImporterNode>()) n.Script = _inputValueBuffer;
 
                 Rectangle btnRect = new Rectangle(x, y + 150, 100, 30);
                 if (clicked && btnRect.Contains(mousePos))
                 {
-                    ParseAndGenerateGraph(scriptNode.Script);
+                    ParseAndGenerateGraph(scriptNode.Script); // Only compiles the inspected one for now as it replaces the whole graph
                     _inspectedNode = null;
                 }
             }
@@ -1508,7 +1593,7 @@ namespace ToyConEngine
             _engine.Nodes.Remove(node);
             _nodeRects.Remove(node);
             if (_inspectedNode == node) _inspectedNode = null;
-            if (_draggedNode == node) _draggedNode = null;
+            _selectedNodes.Remove(node);
 
             foreach (var n in _engine.Nodes)
             {
@@ -1517,6 +1602,134 @@ namespace ToyConEngine
                     input.ConnectedSources.RemoveAll(s => s.ParentNode == node);
                 }
             }
+        }
+
+        private void DeleteSelectedNodes()
+        {
+            // Create a copy to avoid modification during iteration issues
+            var nodesToDelete = new List<Node>(_selectedNodes);
+            foreach (var node in nodesToDelete)
+            {
+                DeleteNode(node);
+            }
+            _selectedNodes.Clear();
+        }
+
+        private Node CloneNode(Node original)
+        {
+            Node clone = null;
+            if (original is ConstantNode c) clone = new ConstantNode(c.StoredValue);
+            else if (original is MathNode m) clone = new MathNode(m.Op);
+            else if (original is LogicNode l) clone = new LogicNode(l.Type);
+            else if (original is TimerNode) clone = new TimerNode();
+            else if (original is CounterNode cnt) { clone = new CounterNode(); ((CounterNode)clone).Value = cnt.Value; }
+            else if (original is RandomNode) clone = new RandomNode();
+            else if (original is ButtonNode b) { clone = new ButtonNode(); ((ButtonNode)clone).IsToggle = b.IsToggle; }
+            else if (original is KeyNode k) { clone = new KeyNode(); ((KeyNode)clone).Key = k.Key; ((KeyNode)clone).Name = k.Name; }
+            else if (original is CursorNode) clone = new CursorNode();
+            else if (original is ColorOutputNode) clone = new ColorOutputNode();
+            else if (original is BeepOutputNode bp) { clone = new BeepOutputNode(); ((BeepOutputNode)clone).SoundName = bp.SoundName; }
+            else if (original is ScriptImporterNode s) { clone = new ScriptImporterNode(); ((ScriptImporterNode)clone).Script = s.Script; }
+            
+            if (clone != null)
+            {
+                // Copy generic properties if needed, though most are set in constructor
+            }
+            return clone;
+        }
+
+        private void CopyNodes()
+        {
+            _clipboardNodes.Clear();
+            _clipboardConnections.Clear();
+
+            if (_selectedNodes.Count == 0) return;
+
+            // 1. Clone Nodes
+            var nodeMap = new Dictionary<Node, int>(); // Map Original -> Index in Clipboard
+            for (int i = 0; i < _selectedNodes.Count; i++)
+            {
+                var original = _selectedNodes[i];
+                var clone = CloneNode(original);
+                if (clone != null)
+                {
+                    _clipboardNodes.Add(clone);
+                    nodeMap[original] = i;
+                }
+            }
+
+            // 2. Record Connections (only internal to selection)
+            for (int i = 0; i < _selectedNodes.Count; i++)
+            {
+                var original = _selectedNodes[i];
+                for (int inputIdx = 0; inputIdx < original.Inputs.Count; inputIdx++)
+                {
+                    var input = original.Inputs[inputIdx];
+                    foreach (var source in input.ConnectedSources)
+                    {
+                        if (nodeMap.ContainsKey(source.ParentNode))
+                        {
+                            int sourceNodeIdx = nodeMap[source.ParentNode];
+                            int sourceOutputIdx = source.ParentNode.Outputs.IndexOf(source);
+                            
+                            _clipboardConnections.Add(new ConnectionData 
+                            { 
+                                TargetNodeIdx = i, 
+                                TargetInputIdx = inputIdx, 
+                                SourceNodeIdx = sourceNodeIdx, 
+                                SourceOutputIdx = sourceOutputIdx 
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        private void PasteNodes()
+        {
+            if (_clipboardNodes.Count == 0) return;
+
+            _selectedNodes.Clear();
+            var newNodes = new List<Node>();
+
+            // 1. Instantiate new nodes from clipboard templates
+            foreach (var clipNode in _clipboardNodes)
+            {
+                var newNode = CloneNode(clipNode);
+                if (newNode != null)
+                {
+                    newNodes.Add(newNode);
+                    SpawnNode(newNode); // Adds to engine and rects
+                    _selectedNodes.Add(newNode);
+                }
+            }
+
+            // 2. Restore connections
+            foreach (var conn in _clipboardConnections)
+            {
+                if (conn.TargetNodeIdx < newNodes.Count && conn.SourceNodeIdx < newNodes.Count)
+                {
+                    var target = newNodes[conn.TargetNodeIdx];
+                    var source = newNodes[conn.SourceNodeIdx];
+                    
+                    if (conn.TargetInputIdx < target.Inputs.Count && conn.SourceOutputIdx < source.Outputs.Count)
+                    {
+                        _engine.Connect(source, conn.SourceOutputIdx, target, conn.TargetInputIdx);
+                    }
+                }
+            }
+
+            // 3. Offset positions slightly to indicate new paste (or follow mouse if we tracked relative positions)
+            // For now, SpawnNode puts them at mouse position, but they will all stack.
+            // Better: Keep relative positions from clipboard.
+            // Since SpawnNode uses Mouse.GetState().Position, they all spawn there.
+            // We should arrange them relative to the first node.
+            // But we didn't store positions in clipboard.
+            // Let's just scatter them slightly or leave them stacked (user can drag).
+            // Actually, SpawnNodeAt uses specific X/Y. SpawnNode uses Mouse.
+            // Let's rely on the user dragging them apart for now, or improve Copy to store relative positions.
+            // Improvement: Store relative positions in Copy.
+            // But for this request, basic paste is fine.
         }
 
         private void SpawnNode(Node node)
@@ -1563,16 +1776,16 @@ namespace ToyConEngine
         }
 
         // Helper to draw lines using the 1x1 pixel texture
-        private void DrawLine(SpriteBatch sb, Vector2 start, Vector2 end, Color color, float thickness = 1f)
+        private void DrawLine(SpriteBatch sb, Vector2 start, Vector2 end, Color color, float thickness = 2f)
         {
             var edge = end - start;
             var angle = (float)Math.Atan2(edge.Y, edge.X);
             sb.Draw(_pixel, new Rectangle((int)start.X, (int)start.Y, (int)edge.Length(), (int)thickness), null, color, angle, new Vector2(0, 0.5f), SpriteEffects.None, 0);
         }
 
-        private void DrawHollowRect(SpriteBatch sb, Rectangle rect, Color color)
+        private void DrawHollowRect(SpriteBatch sb, Rectangle rect, Color color, int thickness = 2)
         {
-            int t = 2; // thickness
+            int t = thickness;
             sb.Draw(_pixel, new Rectangle(rect.X, rect.Y, rect.Width, t), color); // Top
             sb.Draw(_pixel, new Rectangle(rect.X, rect.Y + rect.Height - t, rect.Width, t), color); // Bottom
             sb.Draw(_pixel, new Rectangle(rect.X, rect.Y, t, rect.Height), color); // Left
