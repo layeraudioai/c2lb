@@ -407,6 +407,7 @@ namespace ToyConEngine
 
         private Node _connectionStartNode = null;
         private int _connectionStartIndex = -1;
+        private string _inputValueBuffer = "";
 
         public ToyConGame()
         {
@@ -531,7 +532,7 @@ namespace ToyConEngine
 
             if (_inspectedNode != null)
             {
-                UpdateOverlay(mouseState, clicked);
+                UpdateOverlay(mouseState, keyboardState, clicked);
                 _prevKeyboardState = keyboardState;
                 _prevMouseState = mouseState;
                 base.Update(gameTime);
@@ -599,6 +600,9 @@ namespace ToyConEngine
                         if (kvp.Value.Contains(mousePos))
                         {
                             _inspectedNode = kvp.Key;
+                            _inputValueBuffer = "";
+                            if (_inspectedNode is ConstantNode c) _inputValueBuffer = c.StoredValue.ToString();
+                            if (_inspectedNode is CounterNode cnt) _inputValueBuffer = cnt.Value.ToString();
                             _draggedNode = null;
                             doubleClickHandled = true;
                             break;
@@ -858,17 +862,22 @@ namespace ToyConEngine
             }
         }
 
-        private void UpdateOverlay(MouseState mouse, bool clicked)
+        private void UpdateOverlay(MouseState mouse, KeyboardState keyboard, bool clicked)
         {
             _overlayRect = new Rectangle(Window.ClientBounds.Width / 2 - 150, Window.ClientBounds.Height / 2 - 100, 300, 200);
             
-            if (!clicked) return;
-
             Point mousePos = mouse.Position;
 
             // Close Button
             Rectangle closeRect = new Rectangle(_overlayRect.Right - 25, _overlayRect.Top + 5, 20, 20);
-            if (closeRect.Contains(mousePos))
+            if (clicked && closeRect.Contains(mousePos))
+            {
+                _inspectedNode = null;
+                return;
+            }
+
+            // Keyboard Close
+            if (IsKeyPressed(keyboard, Keys.Escape))
             {
                 _inspectedNode = null;
                 return;
@@ -883,23 +892,38 @@ namespace ToyConEngine
                 Rectangle minusRect = new Rectangle(x, y, 30, 30);
                 Rectangle plusRect = new Rectangle(x + 100, y, 30, 30);
                 
-                if (minusRect.Contains(mousePos)) cNode.StoredValue -= 1.0f;
-                if (plusRect.Contains(mousePos)) cNode.StoredValue += 1.0f;
+                if (clicked && minusRect.Contains(mousePos)) 
+                {
+                    cNode.StoredValue = (float)Math.Floor(cNode.StoredValue - 1.0f);
+                    _inputValueBuffer = cNode.StoredValue.ToString();
+                }
+                if (clicked && plusRect.Contains(mousePos)) 
+                {
+                    cNode.StoredValue = (float)Math.Floor(cNode.StoredValue + 1.0f);
+                    _inputValueBuffer = cNode.StoredValue.ToString();
+                }
+
+                HandleTextInput(keyboard, ref _inputValueBuffer);
+                if (float.TryParse(_inputValueBuffer, out float val)) cNode.StoredValue = val;
             }
             else if (_inspectedNode is MathNode mNode)
             {
                 Rectangle btnRect = new Rectangle(x, y, 200, 30);
-                if (btnRect.Contains(mousePos)) mNode.Op = (MathNode.Operation)(((int)mNode.Op + 1) % 4);
+                if (clicked && btnRect.Contains(mousePos)) mNode.Op = (MathNode.Operation)(((int)mNode.Op + 1) % 4);
+                if (IsKeyPressed(keyboard, Keys.Right)) mNode.Op = (MathNode.Operation)(((int)mNode.Op + 1) % 4);
+                if (IsKeyPressed(keyboard, Keys.Left)) mNode.Op = (MathNode.Operation)(((int)mNode.Op + 3) % 4);
             }
             else if (_inspectedNode is LogicNode lNode)
             {
                 Rectangle btnRect = new Rectangle(x, y, 200, 30);
-                if (btnRect.Contains(mousePos)) lNode.Type = (LogicNode.LogicType)(((int)lNode.Type + 1) % 5);
+                if (clicked && btnRect.Contains(mousePos)) lNode.Type = (LogicNode.LogicType)(((int)lNode.Type + 1) % 5);
+                if (IsKeyPressed(keyboard, Keys.Right)) lNode.Type = (LogicNode.LogicType)(((int)lNode.Type + 1) % 5);
+                if (IsKeyPressed(keyboard, Keys.Left)) lNode.Type = (LogicNode.LogicType)(((int)lNode.Type + 4) % 5);
             }
             else if (_inspectedNode is KeyNode kNode)
             {
                 Rectangle btnRect = new Rectangle(x, y, 200, 30);
-                if (btnRect.Contains(mousePos)) 
+                if (clicked && btnRect.Contains(mousePos)) 
                 {
                     Keys[] commonKeys = { Keys.Space, Keys.A, Keys.B, Keys.Up, Keys.Down, Keys.Left, Keys.Right, Keys.Enter, Keys.W, Keys.S };
                     int idx = Array.IndexOf(commonKeys, kNode.Key);
@@ -907,23 +931,47 @@ namespace ToyConEngine
                     kNode.Key = commonKeys[idx];
                     kNode.Name = $"Key ({kNode.Key})";
                 }
+                
+                Keys[] pressed = keyboard.GetPressedKeys();
+                foreach (var k in pressed)
+                {
+                    if (!_prevKeyboardState.IsKeyDown(k) && k != Keys.Escape)
+                    {
+                        kNode.Key = k;
+                        kNode.Name = $"Key ({kNode.Key})";
+                        break;
+                    }
+                }
             }
             else if (_inspectedNode is TimerNode tNode)
             {
                 Rectangle resetRect = new Rectangle(x, y, 100, 30);
-                if (resetRect.Contains(mousePos)) tNode.ElapsedTime = 0;
+                if (clicked && resetRect.Contains(mousePos)) tNode.ElapsedTime = 0;
+                if (IsKeyPressed(keyboard, Keys.R)) tNode.ElapsedTime = 0;
             }
             else if (_inspectedNode is CounterNode cntNode)
             {
                 Rectangle minusRect = new Rectangle(x, y, 30, 30);
                 Rectangle plusRect = new Rectangle(x + 100, y, 30, 30);
-                if (minusRect.Contains(mousePos)) cntNode.Value--;
-                if (plusRect.Contains(mousePos)) cntNode.Value++;
+                if (clicked && minusRect.Contains(mousePos)) 
+                {
+                    cntNode.Value--;
+                    _inputValueBuffer = cntNode.Value.ToString();
+                }
+                if (clicked && plusRect.Contains(mousePos)) 
+                {
+                    cntNode.Value++;
+                    _inputValueBuffer = cntNode.Value.ToString();
+                }
+
+                HandleTextInput(keyboard, ref _inputValueBuffer);
+                if (float.TryParse(_inputValueBuffer, out float val)) cntNode.Value = val;
             }
             else if (_inspectedNode is ButtonNode btnNode)
             {
                 Rectangle toggleRect = new Rectangle(x, y, 200, 30);
-                if (toggleRect.Contains(mousePos)) btnNode.IsToggle = !btnNode.IsToggle;
+                if (clicked && toggleRect.Contains(mousePos)) btnNode.IsToggle = !btnNode.IsToggle;
+                if (IsKeyPressed(keyboard, Keys.Space)) btnNode.IsToggle = !btnNode.IsToggle;
             }
         }
 
@@ -949,7 +997,7 @@ namespace ToyConEngine
                 if (_font != null)
                 {
                     _spriteBatch.DrawString(_font, "-", new Vector2(x + 10, y + 5), Color.White);
-                    _spriteBatch.DrawString(_font, cNode.StoredValue.ToString("0.0"), new Vector2(x + 40, y + 5), Color.White);
+                    _spriteBatch.DrawString(_font, _inputValueBuffer, new Vector2(x + 40, y + 5), Color.White);
                     _spriteBatch.DrawString(_font, "+", new Vector2(x + 110, y + 5), Color.White);
                 }
             }
@@ -981,7 +1029,7 @@ namespace ToyConEngine
                 if (_font != null)
                 {
                     _spriteBatch.DrawString(_font, "-", new Vector2(x + 10, y + 5), Color.White);
-                    _spriteBatch.DrawString(_font, cntNode.Value.ToString("0"), new Vector2(x + 40, y + 5), Color.White);
+                    _spriteBatch.DrawString(_font, _inputValueBuffer, new Vector2(x + 40, y + 5), Color.White);
                     _spriteBatch.DrawString(_font, "+", new Vector2(x + 110, y + 5), Color.White);
                 }
             }
@@ -998,6 +1046,32 @@ namespace ToyConEngine
             {
                 if (_font != null) _spriteBatch.DrawString(_font, $"Vol:{beepNode.Volume:0.0} Pitch:{beepNode.Pitch:0.0}", new Vector2(x, y), Color.White);
             }
+        }
+
+        private void HandleTextInput(KeyboardState current, ref string buffer)
+        {
+            foreach (Keys key in current.GetPressedKeys())
+            {
+                if (!_prevKeyboardState.IsKeyDown(key))
+                {
+                    if (key == Keys.Back && buffer.Length > 0)
+                        buffer = buffer.Substring(0, buffer.Length - 1);
+                    else
+                    {
+                        char? c = KeyToChar(key);
+                        if (c.HasValue) buffer += c.Value;
+                    }
+                }
+            }
+        }
+
+        private char? KeyToChar(Keys key)
+        {
+            if (key >= Keys.D0 && key <= Keys.D9) return (char)('0' + (key - Keys.D0));
+            if (key >= Keys.NumPad0 && key <= Keys.NumPad9) return (char)('0' + (key - Keys.NumPad0));
+            if (key == Keys.OemPeriod || key == Keys.Decimal) return '.';
+            if (key == Keys.OemMinus || key == Keys.Subtract) return '-';
+            return null;
         }
 
         private void DeleteNode(Node node)

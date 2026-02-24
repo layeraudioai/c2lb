@@ -1,0 +1,9 @@
+.store
+bin
+obj
+Content/bin
+Content/obj
+.mgstats
+mgcb.exe
+Content/beep.wav
+Content/Font.spritefont
