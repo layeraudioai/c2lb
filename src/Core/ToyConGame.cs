@@ -27,7 +27,7 @@ namespace ToyConEngine
         private bool _isSelecting = false;
         private Point _selectionStart;
         private Rectangle _selectionRect;
-        private List<Node> _clipboardNodes = new List<Node>();
+        private List<(Node Node, Point Offset)> _clipboardNodes = new List<(Node, Point)>();
         // We need to store connections for clipboard. 
         // Since we clone nodes, we need to know which input index connects to which output index of which node index in the list.
         private class ConnectionData { public int TargetNodeIdx; public int TargetInputIdx; public int SourceNodeIdx; public int SourceOutputIdx; }
@@ -189,6 +189,7 @@ namespace ToyConEngine
                 UpdateOverlay(mouseState, keyboardState, clicked);
                 _prevKeyboardState = keyboardState;
                 _prevMouseState = mouseState;
+                _lastMousePos = mouseState.Position;
                 base.Update(gameTime);
                 return;
             }
@@ -851,6 +852,7 @@ namespace ToyConEngine
             if (clicked && closeRect.Contains(mousePos))
             {
                 _inspectedNode = null;
+                _isDraggingNodes = false;
                 return;
             }
 
@@ -858,6 +860,7 @@ namespace ToyConEngine
             if (IsKeyPressed(keyboard, Keys.Escape))
             {
                 _inspectedNode = null;
+                _isDraggingNodes = false;
                 return;
             }
 
@@ -1224,6 +1227,18 @@ namespace ToyConEngine
 
             if (_selectedNodes.Count == 0) return;
 
+            // Calculate bounds for relative positioning
+            int minX = int.MaxValue;
+            int minY = int.MaxValue;
+            foreach (var node in _selectedNodes)
+            {
+                if (_nodeRects.TryGetValue(node, out Rectangle r))
+                {
+                    if (r.X < minX) minX = r.X;
+                    if (r.Y < minY) minY = r.Y;
+                }
+            }
+
             // 1. Clone Nodes
             var nodeMap = new Dictionary<Node, int>(); // Map Original -> Index in Clipboard
             for (int i = 0; i < _selectedNodes.Count; i++)
@@ -1232,8 +1247,12 @@ namespace ToyConEngine
                 var clone = CloneNode(original);
                 if (clone != null)
                 {
-                    _clipboardNodes.Add(clone);
-                    nodeMap[original] = i;
+                    Point offset = Point.Zero;
+                    if (_nodeRects.TryGetValue(original, out Rectangle r))
+                        offset = new Point(r.X - minX, r.Y - minY);
+
+                    _clipboardNodes.Add((clone, offset));
+                    nodeMap[original] = _clipboardNodes.Count - 1;
                 }
             }
 
@@ -1241,6 +1260,8 @@ namespace ToyConEngine
             for (int i = 0; i < _selectedNodes.Count; i++)
             {
                 var original = _selectedNodes[i];
+                if (!nodeMap.ContainsKey(original)) continue;
+
                 for (int inputIdx = 0; inputIdx < original.Inputs.Count; inputIdx++)
                 {
                     var input = original.Inputs[inputIdx];
@@ -1253,7 +1274,7 @@ namespace ToyConEngine
                             
                             _clipboardConnections.Add(new ConnectionData 
                             { 
-                                TargetNodeIdx = i, 
+                                TargetNodeIdx = nodeMap[original], 
                                 TargetInputIdx = inputIdx, 
                                 SourceNodeIdx = sourceNodeIdx, 
                                 SourceOutputIdx = sourceOutputIdx 
@@ -1270,15 +1291,16 @@ namespace ToyConEngine
 
             _selectedNodes.Clear();
             var newNodes = new List<Node>();
+            Point mousePos = Mouse.GetState().Position;
 
             // 1. Instantiate new nodes from clipboard templates
-            foreach (var clipNode in _clipboardNodes)
+            foreach (var entry in _clipboardNodes)
             {
-                var newNode = CloneNode(clipNode);
+                var newNode = CloneNode(entry.Node);
                 if (newNode != null)
                 {
                     newNodes.Add(newNode);
-                    SpawnNode(newNode); // Adds to engine and rects
+                    SpawnNodeAt(newNode, mousePos.X + entry.Offset.X, mousePos.Y + entry.Offset.Y);
                     _selectedNodes.Add(newNode);
                 }
             }
