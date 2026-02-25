@@ -1,8 +1,11 @@
-namespace ToyConEngine {
-    // A Random Node
+using Microsoft.Xna.Framework;
+using System;
+
+namespace ToyConEngine
+{
     public class RandomNode : Node
     {
-        private static Random _rng = new Random();
+        private static readonly Random _random = new Random();
 
         public RandomNode()
         {
@@ -10,9 +13,6 @@ namespace ToyConEngine {
             AddOutput("Out");
         }
 
-        public override void Evaluate(GameTime gameTime)
-        {
-            Outputs[0].SetValue((float)_rng.NextDouble());
-        }
+        public override void Evaluate(GameTime gameTime) => Outputs[0].SetValue((float)_random.NextDouble());
     }
 }

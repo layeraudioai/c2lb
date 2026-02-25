@@ -1,3 +1,6 @@
+using Microsoft.Xna.Framework;
+using System.Collections.Generic;
+
 //The Graph Manager (The Engine)
 namespace ToyConEngine {
     public class GraphEngine

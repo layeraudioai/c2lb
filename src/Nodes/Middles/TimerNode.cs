@@ -1,8 +1,10 @@
-namespace ToyConEngine {
-    // A Timer Node
+using Microsoft.Xna.Framework;
+
+namespace ToyConEngine
+{
     public class TimerNode : Node
     {
-        public float ElapsedTime { get; set; } = 0f;
+        public float ElapsedTime { get; set; }
 
         public TimerNode()
         {
@@ -10,10 +12,6 @@ namespace ToyConEngine {
             AddOutput("Time");
         }
 
-        public override void Evaluate(GameTime gameTime)
-        {
-            ElapsedTime += (float)gameTime.ElapsedGameTime.TotalSeconds;
-            Outputs[0].SetValue(ElapsedTime);
-        }
+        public override void Evaluate(GameTime gameTime) => ElapsedTime += (float)gameTime.ElapsedGameTime.TotalSeconds;
     }
 }

@@ -1,5 +1,8 @@
-namespace ToyConEngine {  
-    // A Math Node (Add, Subtract, Multiply)
+using Microsoft.Xna.Framework;
+using System;
+
+namespace ToyConEngine
+{
     public class MathNode : Node
     {
         public enum Operation { Add, Subtract, Multiply, Divide, Abs, Select }
@@ -9,50 +12,26 @@ namespace ToyConEngine {
         {
             Name = $"Math ({op})";
             Op = op;
-            if (op == Operation.Abs)
-            {
-                AddInput("A");
-            }
-            else if (op == Operation.Select)
-            {
-                AddInput("Cond");
-                AddInput("True");
-                AddInput("False");
-            }
-            else
-            {
-                AddInput("A");
-                AddInput("B");
-            }
+            AddInput("A");
+            if (op != Operation.Abs) AddInput("B");
+            if (op == Operation.Select) AddInput("C");
             AddOutput("Result");
         }
 
         public override void Evaluate(GameTime gameTime)
         {
-            float result = 0f;
-
-            if (Op == Operation.Abs)
+            float a = Inputs[0].GetValue();
+            float b = Inputs.Count > 1 ? Inputs[1].GetValue() : 0;
+            float result = 0;
+            switch (Op)
             {
-                result = Math.Abs(Inputs[0].GetValue());
+                case Operation.Add: result = a + b; break;
+                case Operation.Subtract: result = a - b; break;
+                case Operation.Multiply: result = a * b; break;
+                case Operation.Divide: result = b != 0 ? a / b : 0; break;
+                case Operation.Abs: result = Math.Abs(a); break;
+                case Operation.Select: result = a > 0 ? b : (Inputs.Count > 2 ? Inputs[2].GetValue() : 0); break;
             }
-            else if (Op == Operation.Select)
-            {
-                float cond = Inputs[0].GetValue();
-                result = (Math.Abs(cond) > 0.001f) ? Inputs[1].GetValue() : Inputs[2].GetValue();
-            }
-            else
-            {
-                float a = Inputs[0].GetValue();
-                float b = Inputs[1].GetValue();
-                switch (Op)
-                {
-                    case Operation.Add: result = a + b; break;
-                    case Operation.Subtract: result = a - b; break;
-                    case Operation.Multiply: result = a * b; break;
-                    case Operation.Divide: result = (Math.Abs(b) > 0.001f) ? a / b : 0f; break;
-                }
-            }
-
             Outputs[0].SetValue(result);
         }
     }

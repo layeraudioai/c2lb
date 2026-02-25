@@ -1,5 +1,7 @@
-namespace ToyConEngine{
-    // A Constant Number Node
+using Microsoft.Xna.Framework;
+
+namespace ToyConEngine
+{
     public class ConstantNode : Node
     {
         public float StoredValue { get; set; }
@@ -11,10 +13,6 @@ namespace ToyConEngine{
             AddOutput("Out");
         }
 
-        public override void Evaluate(GameTime gameTime)
-        {
-            // Always output the stored value
-            Outputs[0].SetValue(StoredValue);
-        }
+        public override void Evaluate(GameTime gameTime) => Outputs[0].SetValue(StoredValue);
     }
 }

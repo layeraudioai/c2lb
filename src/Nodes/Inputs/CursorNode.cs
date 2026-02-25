@@ -1,5 +1,8 @@
-namespace ToyConEngine {
-    // A Cursor Node (Mouse X/Y)
+using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Input;
+
+namespace ToyConEngine
+{
     public class CursorNode : Node
     {
         public CursorNode()
@@ -9,16 +12,6 @@ namespace ToyConEngine {
             AddOutput("Y");
         }
 
-        public override void Evaluate(GameTime gameTime)
-        {
-            var mouse = Mouse.GetState();
-            var bounds = ToyConGame.ClientBounds;
-
-            float x = (bounds.Width > 0) ? (float)mouse.X / bounds.Width : 0f;
-            float y = (bounds.Height > 0) ? (float)mouse.Y / bounds.Height : 0f;
-
-            Outputs[0].SetValue(x);
-            Outputs[1].SetValue(y);
-        }
+        public override void Evaluate(GameTime gameTime) => Outputs[0].SetValue(Mouse.GetState().X);
     }
 }

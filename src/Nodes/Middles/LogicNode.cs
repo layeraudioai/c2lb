@@ -1,3 +1,6 @@
+using Microsoft.Xna.Framework;
+using System;
+
 namespace ToyConEngine {
     // A Logic Node (AND, NOT)
     public class LogicNode : Node

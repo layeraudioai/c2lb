@@ -1,38 +1,23 @@
-namespace ToyConEngine {
+using Microsoft.Xna.Framework;
+
+namespace ToyConEngine
+{
     public class BeepOutputNode : Node
     {
         public bool ShouldPlay { get; private set; }
+        public float Volume => Inputs.Count > 1 ? Inputs[1].GetValue() : 1.0f;
+        public float Pitch => Inputs.Count > 2 ? Inputs[2].GetValue() : 0.0f;
         public string SoundName { get; set; } = "Beep";
-        public float Pitch { get; private set; }
-        public float Volume { get; private set; }
-        private bool _lastTriggerState = false;
+        private bool _prevTrigger;
 
         public BeepOutputNode()
         {
-            Name = "Beep Output";
-            AddInput("Trigger");
-            AddInput("Pitch");
+            Name = "Beep";
+            AddInput("Play");
             AddInput("Volume");
+            AddInput("Pitch");
         }
 
-        public override void Evaluate(GameTime gameTime)
-        {
-            ShouldPlay = false; // Reset every frame
-            bool currentTrigger = Inputs[0].GetValue() > 0.5f;
-
-            Pitch = Math.Clamp(Inputs[1].GetValue(), -1.0f, 1.0f);
-            if (Inputs[2].ConnectedSources.Count > 0)
-                Volume = Math.Clamp(Inputs[2].GetValue(), 0.0f, 1.0f);
-            else
-                Volume = 1.0f;
-
-            if (currentTrigger && !_lastTriggerState)
-            {
-                ShouldPlay = true;
-                Pitch = Math.Clamp(Inputs[1].GetValue(), -1.0f, 1.0f);
-                Volume = Math.Clamp(Inputs[2].GetValue(), 0.0f, 1.0f);
-            }
-            _lastTriggerState = currentTrigger;
-        }
+        public override void Evaluate(GameTime gameTime) => ShouldPlay = Inputs[0].GetValue() > 0 && !_prevTrigger;
     }
 }

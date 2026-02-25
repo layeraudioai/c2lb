@@ -5,5 +5,5 @@ Content/bin
 Content/obj
 .mgstats
 mgcb.exe
-Content/beep.wav
+Content/*.wav
 Content/Font.spritefont

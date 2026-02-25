@@ -1,3 +1,6 @@
+using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Input;
+
 namespace ToyConEngine {
     // A Keyboard Key Node
     public class KeyNode : Node

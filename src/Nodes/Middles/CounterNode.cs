@@ -1,38 +1,31 @@
-namespace ToyConEngine {
-    // A Counter Node
+using Microsoft.Xna.Framework;
+
+namespace ToyConEngine
+{
     public class CounterNode : Node
     {
-        public float Value { get; set; } = 0;
-        private bool _lastCountUpState = false;
-        private bool _lastCountDownState = false;
+        public float Value { get; set; }
+        private bool _prevInc;
+        private bool _prevDec;
 
         public CounterNode()
         {
             Name = "Counter";
-            AddInput("Count Up");
-            AddInput("Count Down");
+            AddInput("Inc");
+            AddInput("Dec");
             AddInput("Reset");
-            AddOutput("Value");
+            AddOutput("Count");
         }
 
         public override void Evaluate(GameTime gameTime)
         {
-            bool countUp = Inputs[0].GetValue() > 0.5f;
-            bool countDown = Inputs[1].GetValue() > 0.5f;
-            bool reset = Inputs[2].GetValue() > 0.5f;
-
-            if (reset)
-            {
-                Value = 0;
-            }
-            else
-            {
-                if (countUp && !_lastCountUpState) Value++;
-                if (countDown && !_lastCountDownState) Value--;
-            }
-
-            _lastCountUpState = countUp;
-            _lastCountDownState = countDown;
+            bool inc = Inputs[0].GetValue() > 0;
+            bool dec = Inputs[1].GetValue() > 0;
+            if (Inputs[2].GetValue() > 0) Value = 0;
+            if (inc && !_prevInc) Value++;
+            if (dec && !_prevDec) Value--;
+            _prevInc = inc;
+            _prevDec = dec;
             Outputs[0].SetValue(Value);
         }
     }
