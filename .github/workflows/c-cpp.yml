@@ -1,0 +1,21 @@
+name: C/C++ CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: build tools
+      run: cd tools \
+           mkdir loader \
+           cl /o loader/loader.exe /DLOADER dir2exe.c \
+           mkdir packer \
+           cl /o pakcer/packer.exe /DLOADER dir2exe.c 
