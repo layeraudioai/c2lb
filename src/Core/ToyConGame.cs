@@ -1599,27 +1599,18 @@ namespace ToyConEngine
 
             try
             {
-                Log("Starting ExportStandalone...");
                 var currentExe = Environment.ProcessPath;
                 var sourceDir = AppDomain.CurrentDomain.BaseDirectory;
                 var destDir = Path.GetDirectoryName(filename);
                 var tempDir = Path.Combine(destDir, "ToyCon_Temp_Build\\");
                 var exportPath = Path.Combine(tempDir, "ToyCon_Export.exe");
-                var exeName = filename;
 
                 // 1. Copy the current executable
-                Log($"Source: {sourceDir}");
-                Log($"Dest: {destDir}");
-                Log($"Temp: {tempDir}");
-                Log($"Temp: {exportPath}");
-
                 if (!Directory.Exists(tempDir)) 
                 {
-                    Log("Creating temp directory...");
                     Directory.CreateDirectory(tempDir);
                 }
 
-                Log("Copying directory...");
                 CopyDirectory(sourceDir, tempDir);
                 File.Copy(currentExe, exportPath, true);
 
@@ -1638,27 +1629,22 @@ namespace ToyConEngine
                 }
 
                 // 2. Prepare data
-                var tempExePath = Path.Combine(tempDir, exeName);
-                Log($"Looking for executable at {tempExePath}...");
-                if (!File.Exists(tempExePath))
+                var tempExePath = exportPath;
+                if (!File.Exists(exportPath))
                 {
-                    Log("Default exe not found, searching...");
                     var exes = Directory.GetFiles(tempDir, "*.exe");
                     foreach (var exe in exes)
                     {
                         var name = Path.GetFileName(exe);
                         if (name.Equals("packer.exe", StringComparison.OrdinalIgnoreCase)) continue;
                         if (name.Equals("loader.exe", StringComparison.OrdinalIgnoreCase)) continue;
-                        exeName = name;
                         tempExePath = exe;
-                        Log($"Found executable: {exeName}");
                         break;
                     }
                 }
 
                 if (File.Exists(tempExePath))
                 {
-                    Log("Appending graph data...");
                     graphData = SerializeGraph();
                     dataBytes = Encoding.UTF8.GetBytes(graphData);
                     lengthBytes = BitConverter.GetBytes(dataBytes.Length);
@@ -1672,13 +1658,8 @@ namespace ToyConEngine
                         stream.Write(magicBytes, 0, magicBytes.Length);
                     }
                 }
-                else
-                {
-                    Log("Error: Executable not found in temp directory.");
-                }
 
                 // 4. Find Packer
-                Log("Locating packer tool...");
                 string packerPath = Path.Combine(sourceDir, "tools", "packer.exe");
                 if (!File.Exists(packerPath))
                 {
@@ -1694,32 +1675,23 @@ namespace ToyConEngine
                         dir = dir.Parent;
                     }
                 }
-                Log($"Packer path: {packerPath}");
 
                 // 5. Run Packer
                 if (File.Exists(packerPath))
                 {
-                    Log("Running packer...");
                     var psi = new ProcessStartInfo(packerPath)
                     {
                         ArgumentList = { tempDir, tempExePath, filename },
                         UseShellExecute = false,
                         CreateNoWindow = true,
-                        WorkingDirectory = destDir
+                        WorkingDirectory = tempDir
                     };
                     var p = Process.Start(psi);
                     p.WaitForExit();
-                    Log($"Packer finished with exit code: {p.ExitCode}");
-                }
-                else
-                {
-                    Log("Error: Packer tool not found.");
                 }
 
                 // 6. Cleanup
-                Log("Cleaning up...");
-                //try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true); } catch (Exception ex) { Log($"Cleanup error: {ex.Message}"); }
-                Log("Export complete.");
+                try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true); } catch (Exception ex) { Log($"Cleanup error: {ex.Message}"); }
             }
             catch (Exception e)
             {
