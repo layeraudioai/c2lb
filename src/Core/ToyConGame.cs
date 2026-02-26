@@ -1603,7 +1603,7 @@ namespace ToyConEngine
                 var currentExe = Environment.ProcessPath;
                 var sourceDir = AppDomain.CurrentDomain.BaseDirectory;
                 var destDir = Path.GetDirectoryName(filename);
-                var tempDir = Path.Combine(destDir, "ToyCon_Temp_Build");
+                var tempDir = Path.Combine(destDir, "ToyCon_Temp_Build\\");
                 var exportPath = Path.Combine(tempDir, "ToyCon_Export.exe");
                 var exeName = filename;
 
