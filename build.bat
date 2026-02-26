@@ -38,7 +38,8 @@ dotnet build --configuration=release /p:PublishSingleFile=true /p:IncludeNativeL
 echo Build complete!
 for %%f in (%*) do (
     if "%%f"=="pack" (
-        copy tools\*.exe bin\Release\net8.0\
+        mkdir bin\Release\net8.0\tools
+        copy tools\*.exe bin\Release\net8.0\tools
         cd tools
         packer ..\bin\Release\net8.0\ ..\bin\Release\net8.0\ToyConEngine.exe ..\LABOx64.exe
         cd ..

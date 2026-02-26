@@ -1594,25 +1594,55 @@ namespace ToyConEngine
 
         private void ExportStandalone(string filename)
         {
+            string logPath = Path.Combine(Path.GetDirectoryName(filename), "export_log.txt");
+            void Log(string msg) => File.AppendAllText(logPath, $"{DateTime.Now}: {msg}\n");
+
             try
             {
+                Log("Starting ExportStandalone...");
                 var currentExe = Environment.ProcessPath;
                 var sourceDir = AppDomain.CurrentDomain.BaseDirectory;
                 var destDir = Path.GetDirectoryName(filename);
                 var tempDir = Path.Combine(destDir, "ToyCon_Temp_Build");
-                var exeName = "ToyConEngine.exe";
+                var exportPath = Path.Combine(tempDir, "ToyCon_Export.exe");
+                var exeName = filename;
 
-                // 1. Create Temp Directory
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-                Directory.CreateDirectory(tempDir);
+                // 1. Copy the current executable
+                Log($"Source: {sourceDir}");
+                Log($"Dest: {destDir}");
+                Log($"Temp: {tempDir}");
+                Log($"Temp: {exportPath}");
 
-                // 2. Copy all files from running directory to temp directory
+                if (!Directory.Exists(tempDir)) 
+                {
+                    Log("Creating temp directory...");
+                    Directory.CreateDirectory(tempDir);
+                }
+
+                Log("Copying directory...");
                 CopyDirectory(sourceDir, tempDir);
+                File.Copy(currentExe, exportPath, true);
 
-                // 3. Append graph data to the EXE in the temp folder
+                // 2. Prepare data
+                string graphData = SerializeGraph();
+                byte[] dataBytes = Encoding.UTF8.GetBytes(graphData);
+                byte[] lengthBytes = BitConverter.GetBytes(dataBytes.Length);
+                byte[] magicBytes = Encoding.UTF8.GetBytes(StandaloneMagic); // 10 bytes
+
+                // 3. Append data to the end of the new executable
+                using (var stream = new FileStream(exportPath, FileMode.Append))
+                {
+                    stream.Write(dataBytes, 0, dataBytes.Length);
+                    stream.Write(lengthBytes, 0, lengthBytes.Length);
+                    stream.Write(magicBytes, 0, magicBytes.Length);
+                }
+
+                // 2. Prepare data
                 var tempExePath = Path.Combine(tempDir, exeName);
+                Log($"Looking for executable at {tempExePath}...");
                 if (!File.Exists(tempExePath))
                 {
+                    Log("Default exe not found, searching...");
                     var exes = Directory.GetFiles(tempDir, "*.exe");
                     foreach (var exe in exes)
                     {
@@ -1621,23 +1651,34 @@ namespace ToyConEngine
                         if (name.Equals("loader.exe", StringComparison.OrdinalIgnoreCase)) continue;
                         exeName = name;
                         tempExePath = exe;
+                        Log($"Found executable: {exeName}");
                         break;
                     }
                 }
 
-                string graphData = SerializeGraph();
-                byte[] dataBytes = Encoding.UTF8.GetBytes(graphData);
-                byte[] lengthBytes = BitConverter.GetBytes(dataBytes.Length);
-                byte[] magicBytes = Encoding.UTF8.GetBytes(StandaloneMagic); // 10 bytes
-
-                using (var stream = new FileStream(tempExePath, FileMode.Append))
+                if (File.Exists(tempExePath))
                 {
-                    stream.Write(dataBytes, 0, dataBytes.Length);
-                    stream.Write(lengthBytes, 0, lengthBytes.Length);
-                    stream.Write(magicBytes, 0, magicBytes.Length);
+                    Log("Appending graph data...");
+                    graphData = SerializeGraph();
+                    dataBytes = Encoding.UTF8.GetBytes(graphData);
+                    lengthBytes = BitConverter.GetBytes(dataBytes.Length);
+                    magicBytes = Encoding.UTF8.GetBytes(StandaloneMagic); // 10 bytes
+
+                    // 3. Append data to the end of the new executable
+                    using (var stream = new FileStream(tempExePath, FileMode.Append))
+                    {
+                        stream.Write(dataBytes, 0, dataBytes.Length);
+                        stream.Write(lengthBytes, 0, lengthBytes.Length);
+                        stream.Write(magicBytes, 0, magicBytes.Length);
+                    }
+                }
+                else
+                {
+                    Log("Error: Executable not found in temp directory.");
                 }
 
                 // 4. Find Packer
+                Log("Locating packer tool...");
                 string packerPath = Path.Combine(sourceDir, "tools", "packer.exe");
                 if (!File.Exists(packerPath))
                 {
@@ -1653,10 +1694,12 @@ namespace ToyConEngine
                         dir = dir.Parent;
                     }
                 }
+                Log($"Packer path: {packerPath}");
 
                 // 5. Run Packer
                 if (File.Exists(packerPath))
                 {
+                    Log("Running packer...");
                     var psi = new ProcessStartInfo(packerPath)
                     {
                         ArgumentList = { tempDir, tempExePath, filename },
@@ -1666,12 +1709,22 @@ namespace ToyConEngine
                     };
                     var p = Process.Start(psi);
                     p.WaitForExit();
+                    Log($"Packer finished with exit code: {p.ExitCode}");
+                }
+                else
+                {
+                    Log("Error: Packer tool not found.");
                 }
 
                 // 6. Cleanup
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+                Log("Cleaning up...");
+                //try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true); } catch (Exception ex) { Log($"Cleanup error: {ex.Message}"); }
+                Log("Export complete.");
             }
-            catch { /* Handle permission errors etc */ }
+            catch (Exception e)
+            {
+                Log($"CRITICAL ERROR: {e.Message}\n{e.StackTrace}");
+            }
         }
 
         private void CopyDirectory(string sourceDir, string destDir)
@@ -1679,14 +1732,22 @@ namespace ToyConEngine
             var dir = Directory.CreateDirectory(destDir);
             foreach (var file in Directory.GetFiles(sourceDir))
             {
-                string destFile = Path.Combine(destDir, Path.GetFileName(file));
-                File.Copy(file, destFile, true);
+                try
+                {
+                    string destFile = Path.Combine(destDir, Path.GetFileName(file));
+                    File.Copy(file, destFile, true);
+                }
+                catch { }
             }
             foreach (var subDir in Directory.GetDirectories(sourceDir))
             {
-                if (new DirectoryInfo(subDir).FullName == dir.FullName) continue;
-                string destSubDir = Path.Combine(destDir, Path.GetFileName(subDir));
-                CopyDirectory(subDir, destSubDir);
+                try
+                {
+                    if (new DirectoryInfo(subDir).FullName == dir.FullName) continue;
+                    string destSubDir = Path.Combine(destDir, Path.GetFileName(subDir));
+                    CopyDirectory(subDir, destSubDir);
+                }
+                catch { }
             }
         }
 
