@@ -8,7 +8,6 @@ for %%f in (%*) do (
         rmdir /S /Q Content\bin
         rmdir /S /Q Content\obj
         echo clean complete
-        pause
     )
     if "%%f"=="content" (
         cd Content
@@ -32,10 +31,18 @@ for %%f in (%*) do (
         )
         cd ..
         echo content ready
-        pause
     )
-
 )
 cls
-dotnet publish --configuration=release --sc /p:PublishSingleFile=true --p:PublishTrimmed=true --p:PublishReadyToRun=true
+dotnet build --configuration=release /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true
 echo Build complete!
+for %%f in (%*) do (
+    if "%%f"=="pack" (
+        copy tools\*.exe bin\Release\net8.0\
+        cd tools
+        packer ..\bin\Release\net8.0\ ..\bin\Release\net8.0\ToyConEngine.exe ..\LABOx64.exe
+        cd ..
+        echo Packing complete!
+        echo all done!
+    )
+)

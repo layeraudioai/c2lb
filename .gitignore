@@ -7,3 +7,5 @@ Content/obj
 mgcb.exe
 Content/*.wav
 Content/Font.spritefont
+*.exe
+*/*.exe

@@ -79,7 +79,11 @@ namespace ToyConEngine
                 { "File", new List<(string, Func<Node>)> {
                     ("Save", () => { SaveLayout("design.toy"); return null; }),
                     ("Load", () => { LoadLayout("design.toy"); return null; }),
-                    ("Export EXE", () => { ExportStandalone("ToyCon_Export.exe"); return null; }),
+                    ("Export EXE", () => { 
+                        var path = PromptForSavePath("ToyCon_Export.exe", "Executable|*.exe");
+                        if (path != null) ExportStandalone(path); 
+                        return null; 
+                    }),
                     ("Clear", () => { _engine.Nodes.Clear(); _nodeRects.Clear(); _selectedNodes.Clear(); _inspectedNode = null; return null; })
                 }},
                 { "Input", new List<(string, Func<Node>)> {
@@ -1173,6 +1177,30 @@ namespace ToyConEngine
             }
         }
 
+        private string PromptForSavePath(string defaultName, string filter)
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                try
+                {
+                    string cmd = $"Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.SaveFileDialog; $d.Filter = '{filter}'; $d.FileName = '{defaultName}'; if ($d.ShowDialog() -eq 'OK') {{ $d.FileName }}";
+                    var psi = new ProcessStartInfo("powershell", $"-command \"{cmd}\"")
+                    {
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        CreateNoWindow = true
+                    };
+                    using var p = Process.Start(psi);
+                    string res = p.StandardOutput.ReadToEnd().Trim();
+                    p.WaitForExit();
+                    return string.IsNullOrEmpty(res) ? null : res;
+                }
+                catch { }
+                return null;
+            }
+            return defaultName;
+        }
+
         private string GetClipboard()
         {
             try
@@ -1568,35 +1596,91 @@ namespace ToyConEngine
         {
             try
             {
-                var currentExe = Process.GetCurrentProcess().MainModule.FileName;
-                var dir = Path.GetDirectoryName(currentExe);
-                var exportPath = Path.Combine(dir, filename);
+                var currentExe = Environment.ProcessPath;
+                var sourceDir = Path.GetDirectoryName(currentExe);
+                var destDir = Path.GetDirectoryName(filename);
+                var tempDir = Path.Combine(destDir, "ToyCon_Temp_Build");
+                var exeName = Path.GetFileName(currentExe);
 
-                // 1. Copy the current executable
-                File.Copy(currentExe, exportPath, true);
+                // 1. Create Temp Directory
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+                Directory.CreateDirectory(tempDir);
 
-                // 2. Prepare data
+                // 2. Copy all files from running directory to temp directory
+                CopyDirectory(sourceDir, tempDir);
+
+                // 3. Append graph data to the EXE in the temp folder
+                var tempExePath = Path.Combine(tempDir, exeName);
                 string graphData = SerializeGraph();
                 byte[] dataBytes = Encoding.UTF8.GetBytes(graphData);
                 byte[] lengthBytes = BitConverter.GetBytes(dataBytes.Length);
                 byte[] magicBytes = Encoding.UTF8.GetBytes(StandaloneMagic); // 10 bytes
 
-                // 3. Append data to the end of the new executable
-                using (var stream = new FileStream(exportPath, FileMode.Append))
+                using (var stream = new FileStream(tempExePath, FileMode.Append))
                 {
                     stream.Write(dataBytes, 0, dataBytes.Length);
                     stream.Write(lengthBytes, 0, lengthBytes.Length);
                     stream.Write(magicBytes, 0, magicBytes.Length);
                 }
+
+                // 4. Find Packer
+                string packerPath = Path.Combine(sourceDir, "tools", "packer.exe");
+                if (!File.Exists(packerPath))
+                {
+                    var dir = new DirectoryInfo(sourceDir);
+                    while (dir != null)
+                    {
+                        var check = Path.Combine(dir.FullName, "tools", "packer.exe");
+                        if (File.Exists(check))
+                        {
+                            packerPath = check;
+                            break;
+                        }
+                        dir = dir.Parent;
+                    }
+                }
+
+                // 5. Run Packer
+                if (File.Exists(packerPath))
+                {
+                    var psi = new ProcessStartInfo(packerPath)
+                    {
+                        ArgumentList = { tempDir, tempExePath, filename },
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        WorkingDirectory = destDir
+                    };
+                    var p = Process.Start(psi);
+                    p.WaitForExit();
+                }
+
+                // 6. Cleanup
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
             }
             catch { /* Handle permission errors etc */ }
+        }
+
+        private void CopyDirectory(string sourceDir, string destDir)
+        {
+            var dir = Directory.CreateDirectory(destDir);
+            foreach (var file in Directory.GetFiles(sourceDir))
+            {
+                string destFile = Path.Combine(destDir, Path.GetFileName(file));
+                File.Copy(file, destFile, true);
+            }
+            foreach (var subDir in Directory.GetDirectories(sourceDir))
+            {
+                if (new DirectoryInfo(subDir).FullName == dir.FullName) continue;
+                string destSubDir = Path.Combine(destDir, Path.GetFileName(subDir));
+                CopyDirectory(subDir, destSubDir);
+            }
         }
 
         private bool TryLoadEmbeddedLayout()
         {
             try
             {
-                var currentExe = Process.GetCurrentProcess().MainModule.FileName;
+                var currentExe = Environment.ProcessPath;
                 using (var stream = new FileStream(currentExe, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                 {
                     if (stream.Length < 20) return false; // Magic(10) + Int(4) + minimal data
