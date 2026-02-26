@@ -1603,15 +1603,28 @@ namespace ToyConEngine
                 var exeName = "ToyConEngine.exe";
 
                 // 1. Create Temp Directory
-                //if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-                try {Directory.CreateDirectory(tempDir); } catch (Exception e) { throw e; }
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+                Directory.CreateDirectory(tempDir);
 
                 // 2. Copy all files from running directory to temp directory
                 CopyDirectory(sourceDir, tempDir);
-                File.Copy("ToyCon_Export.exe", destDir, true);
 
                 // 3. Append graph data to the EXE in the temp folder
                 var tempExePath = Path.Combine(tempDir, exeName);
+                if (!File.Exists(tempExePath))
+                {
+                    var exes = Directory.GetFiles(tempDir, "*.exe");
+                    foreach (var exe in exes)
+                    {
+                        var name = Path.GetFileName(exe);
+                        if (name.Equals("packer.exe", StringComparison.OrdinalIgnoreCase)) continue;
+                        if (name.Equals("loader.exe", StringComparison.OrdinalIgnoreCase)) continue;
+                        exeName = name;
+                        tempExePath = exe;
+                        break;
+                    }
+                }
+
                 string graphData = SerializeGraph();
                 byte[] dataBytes = Encoding.UTF8.GetBytes(graphData);
                 byte[] lengthBytes = BitConverter.GetBytes(dataBytes.Length);
@@ -1656,7 +1669,7 @@ namespace ToyConEngine
                 }
 
                 // 6. Cleanup
-                //if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
             }
             catch { /* Handle permission errors etc */ }
         }
