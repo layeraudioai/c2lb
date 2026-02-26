@@ -1608,6 +1608,7 @@ namespace ToyConEngine
 
                 // 2. Copy all files from running directory to temp directory
                 CopyDirectory(sourceDir, tempDir);
+                File.Copy(currentExe, exportPath, true);
 
                 // 3. Append graph data to the EXE in the temp folder
                 var tempExePath = Path.Combine(tempDir, exeName);
