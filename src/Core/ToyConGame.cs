@@ -1597,7 +1597,7 @@ namespace ToyConEngine
             try
             {
                 var currentExe = Environment.ProcessPath;
-                var sourceDir = Path.GetDirectoryName(currentExe);
+                var sourceDir = AppDomain.CurrentDomain.BaseDirectory;
                 var destDir = Path.GetDirectoryName(filename);
                 var tempDir = Path.Combine(destDir, "ToyCon_Temp_Build");
                 var exeName = Path.GetFileName(currentExe);
