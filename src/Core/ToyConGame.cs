@@ -8,6 +8,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace ToyConEngine
@@ -55,6 +56,8 @@ namespace ToyConEngine
         private Node _connectionStartNode = null;
         private int _connectionStartIndex = -1;
         private string _inputValueBuffer = "";
+        
+        private const string StandaloneMagic = "TOYCON_PKG";
 
         public ToyConGame()
         {
@@ -71,6 +74,12 @@ namespace ToyConEngine
 
             _menus = new Dictionary<string, List<(string Name, Func<Node> Factory)>>
             {
+                { "File", new List<(string, Func<Node>)> {
+                    ("Save", () => { SaveLayout("design.toy"); return null; }),
+                    ("Load", () => { LoadLayout("design.toy"); return null; }),
+                    ("Export EXE", () => { ExportStandalone("ToyCon_Export.exe"); return null; }),
+                    ("Clear", () => { _engine.Nodes.Clear(); _nodeRects.Clear(); _selectedNodes.Clear(); _inspectedNode = null; return null; })
+                }},
                 { "Input", new List<(string, Func<Node>)> {
                     ("Constant", () => new ConstantNode(1.0f)),
                     ("Button", () => new ButtonNode()),
@@ -94,6 +103,9 @@ namespace ToyConEngine
             };
 
             base.Initialize();
+            
+            // Check if this is a standalone build with embedded data
+            TryLoadEmbeddedLayout();
         }
 
         protected override void LoadContent()
@@ -549,7 +561,8 @@ namespace ToyConEngine
                         Rectangle itemRect = new Rectangle(menuX, y, 120, 30);
                         if (itemRect.Contains(mousePos))
                         {
-                            SpawnNode(items[i].Factory());
+                            var n = items[i].Factory();
+                            if (n != null) SpawnNode(n);
                             _activeMenu = null;
                             captured = true;
                             menuClicked = true;
@@ -1391,6 +1404,203 @@ namespace ToyConEngine
             sb.Draw(_pixel, new Rectangle(rect.X, rect.Y + rect.Height - t, rect.Width, t), color); // Bottom
             sb.Draw(_pixel, new Rectangle(rect.X, rect.Y, t, rect.Height), color); // Left
             sb.Draw(_pixel, new Rectangle(rect.X + rect.Width - t, rect.Y, t, rect.Height), color); // Right
+        }
+
+        private string SerializeGraph()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("TOYCON_v1");
+            
+            // Map nodes to IDs
+            var nodeToId = new Dictionary<Node, int>();
+            for (int i = 0; i < _engine.Nodes.Count; i++)
+            {
+                var node = _engine.Nodes[i];
+                nodeToId[node] = i;
+                Rectangle r = _nodeRects[node];
+                string type = node.GetType().Name;
+                string data = GetNodeData(node);
+                sb.AppendLine($"NODE {i} {type} {r.X} {r.Y} {data}");
+            }
+
+            // Save Connections
+            foreach (var node in _engine.Nodes)
+            {
+                int targetId = nodeToId[node];
+                for (int i = 0; i < node.Inputs.Count; i++)
+                {
+                    var input = node.Inputs[i];
+                    foreach (var source in input.ConnectedSources)
+                    {
+                        int sourceId = nodeToId[source.ParentNode];
+                        int sourceOutputIdx = source.ParentNode.Outputs.IndexOf(source);
+                        sb.AppendLine($"CONN {sourceId} {sourceOutputIdx} {targetId} {i}");
+                    }
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        private void SaveLayout(string filename)
+        {
+            File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, filename), SerializeGraph());
+        }
+
+        private void LoadLayoutFromLines(string[] lines)
+        {
+            _engine.Nodes.Clear();
+            _nodeRects.Clear();
+            _selectedNodes.Clear();
+            _inspectedNode = null;
+            _connectionStartNode = null;
+
+            if (lines.Length == 0 || lines[0] != "TOYCON_v1") return;
+
+            var idToNode = new Dictionary<int, Node>();
+
+            foreach (var line in lines)
+            {
+                var parts = line.Split(' ');
+                if (parts[0] == "NODE")
+                {
+                    int id = int.Parse(parts[1]);
+                    string type = parts[2];
+                    int x = int.Parse(parts[3]);
+                    int y = int.Parse(parts[4]);
+                    string data = parts.Length > 5 ? string.Join(" ", parts.Skip(5)) : "";
+
+                    Node n = null;
+                    if (type == "ConstantNode") n = new ConstantNode(0);
+                    else if (type == "MathNode") n = new MathNode(MathNode.Operation.Add);
+                    else if (type == "LogicNode") n = new LogicNode(LogicNode.LogicType.And);
+                    else if (type == "TimerNode") n = new TimerNode();
+                    else if (type == "CounterNode") n = new CounterNode();
+                    else if (type == "RandomNode") n = new RandomNode();
+                    else if (type == "ButtonNode") n = new ButtonNode();
+                    else if (type == "KeyNode") n = new KeyNode();
+                    else if (type == "CursorNode") n = new CursorNode();
+                    else if (type == "ColorOutputNode") n = new ColorOutputNode();
+                    else if (type == "BeepOutputNode") n = new BeepOutputNode();
+                    else if (type == "ScriptImporterNode") n = new ScriptImporterNode();
+
+                    if (n != null)
+                    {
+                        ApplyNodeData(n, data);
+                        SpawnNodeAt(n, x, y);
+                        idToNode[id] = n;
+                    }
+                }
+                else if (parts[0] == "CONN")
+                {
+                    int srcId = int.Parse(parts[1]);
+                    int srcSlot = int.Parse(parts[2]);
+                    int tgtId = int.Parse(parts[3]);
+                    int tgtSlot = int.Parse(parts[4]);
+
+                    if (idToNode.ContainsKey(srcId) && idToNode.ContainsKey(tgtId))
+                    {
+                        _engine.Connect(idToNode[srcId], srcSlot, idToNode[tgtId], tgtSlot);
+                    }
+                }
+            }
+        }
+
+        private void LoadLayout(string filename)
+        {
+            string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, filename);
+            if (!File.Exists(path)) return;
+            LoadLayoutFromLines(File.ReadAllLines(path));
+        }
+
+        private void ExportStandalone(string filename)
+        {
+            try
+            {
+                var currentExe = Process.GetCurrentProcess().MainModule.FileName;
+                var dir = Path.GetDirectoryName(currentExe);
+                var exportPath = Path.Combine(dir, filename);
+
+                // 1. Copy the current executable
+                File.Copy(currentExe, exportPath, true);
+
+                // 2. Prepare data
+                string graphData = SerializeGraph();
+                byte[] dataBytes = Encoding.UTF8.GetBytes(graphData);
+                byte[] lengthBytes = BitConverter.GetBytes(dataBytes.Length);
+                byte[] magicBytes = Encoding.UTF8.GetBytes(StandaloneMagic); // 10 bytes
+
+                // 3. Append data to the end of the new executable
+                using (var stream = new FileStream(exportPath, FileMode.Append))
+                {
+                    stream.Write(dataBytes, 0, dataBytes.Length);
+                    stream.Write(lengthBytes, 0, lengthBytes.Length);
+                    stream.Write(magicBytes, 0, magicBytes.Length);
+                }
+            }
+            catch { /* Handle permission errors etc */ }
+        }
+
+        private bool TryLoadEmbeddedLayout()
+        {
+            try
+            {
+                var currentExe = Process.GetCurrentProcess().MainModule.FileName;
+                using (var stream = new FileStream(currentExe, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    if (stream.Length < 20) return false; // Magic(10) + Int(4) + minimal data
+
+                    byte[] magicCheck = new byte[10];
+                    stream.Seek(-10, SeekOrigin.End);
+                    stream.Read(magicCheck, 0, 10);
+                    string magic = Encoding.UTF8.GetString(magicCheck);
+                    
+                    if (magic != StandaloneMagic) return false;
+
+                    byte[] lengthCheck = new byte[4];
+                    stream.Seek(-14, SeekOrigin.End);
+                    stream.Read(lengthCheck, 0, 4);
+                    int dataLength = BitConverter.ToInt32(lengthCheck, 0);
+
+                    byte[] data = new byte[dataLength];
+                    stream.Seek(-(14 + dataLength), SeekOrigin.End);
+                    stream.Read(data, 0, dataLength);
+
+                    string layout = Encoding.UTF8.GetString(data);
+                    // Split by newline, handling both \r\n and \n
+                    LoadLayoutFromLines(layout.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None));
+                    return true;
+                }
+            }
+            catch { return false; }
+        }
+
+        private string GetNodeData(Node node)
+        {
+            if (node is ConstantNode c) return c.StoredValue.ToString();
+            if (node is MathNode m) return m.Op.ToString();
+            if (node is LogicNode l) return l.Type.ToString();
+            if (node is KeyNode k) return k.Key.ToString();
+            if (node is ButtonNode b) return b.IsToggle.ToString();
+            if (node is BeepOutputNode beep) return beep.SoundName;
+            if (node is CounterNode cnt) return cnt.Value.ToString();
+            if (node is ScriptImporterNode s) return Convert.ToBase64String(Encoding.UTF8.GetBytes(s.Script));
+            return "";
+        }
+
+        private void ApplyNodeData(Node node, string data)
+        {
+            if (string.IsNullOrEmpty(data)) return;
+            try {
+                if (node is ConstantNode c) c.StoredValue = float.Parse(data);
+                if (node is MathNode m) m.Op = Enum.Parse<MathNode.Operation>(data);
+                if (node is LogicNode l) l.Type = Enum.Parse<LogicNode.LogicType>(data);
+                if (node is KeyNode k) { k.Key = Enum.Parse<Keys>(data); k.Name = $"Key ({k.Key})"; }
+                if (node is ButtonNode b) b.IsToggle = bool.Parse(data);
+                if (node is BeepOutputNode beep) beep.SoundName = data;
+                if (node is CounterNode cnt) cnt.Value = float.Parse(data);
+                if (node is ScriptImporterNode s) s.Script = Encoding.UTF8.GetString(Convert.FromBase64String(data));
+            } catch {}
         }
     }
 }
