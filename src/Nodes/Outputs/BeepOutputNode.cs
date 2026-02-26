@@ -7,7 +7,7 @@ namespace ToyConEngine
         public bool ShouldPlay { get; private set; }
         public float Volume => Inputs.Count > 1 ? Inputs[1].GetValue() : 1.0f;
         public float Pitch => Inputs.Count > 2 ? Inputs[2].GetValue() : 0.0f;
-        public string SoundName { get; set; } = "Beep";
+        public string SoundName { get; set; } = "KICK-01";
         private bool _prevTrigger;
 
         public BeepOutputNode()

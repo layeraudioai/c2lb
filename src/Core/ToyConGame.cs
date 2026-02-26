@@ -40,6 +40,8 @@ namespace ToyConEngine
         private Dictionary<Node, Rectangle> _nodeRects = new Dictionary<Node, Rectangle>();
         private bool _isDraggingNodes = false;
         private Point _lastMousePos;
+        private bool _presentationMode = false;
+        private Dictionary<ScreenNode, Texture2D> _screenTextures = new Dictionary<ScreenNode, Texture2D>();
         private KeyboardState _prevKeyboardState;
         private MouseState _prevMouseState;
 
@@ -95,7 +97,8 @@ namespace ToyConEngine
                 }},
                 { "Output", new List<(string, Func<Node>)> {
                     ("Color", () => new ColorOutputNode()),
-                    ("Beep", () => new BeepOutputNode())
+                    ("Beep", () => new BeepOutputNode()),
+                    ("Screen", () => new ScreenNode())
                 }},
                 { "Import", new List<(string, Func<Node>)> {
                     ("Script", () => new ScriptImporterNode())
@@ -105,7 +108,7 @@ namespace ToyConEngine
             base.Initialize();
             
             // Check if this is a standalone build with embedded data
-            TryLoadEmbeddedLayout();
+            if (TryLoadEmbeddedLayout()) _presentationMode = true;
         }
 
         protected override void LoadContent()
@@ -193,6 +196,8 @@ namespace ToyConEngine
             // Shortcuts
             bool ctrl = keyboardState.IsKeyDown(Keys.LeftControl) || keyboardState.IsKeyDown(Keys.RightControl);
             if (IsKeyPressed(keyboardState, Keys.Delete)) DeleteSelectedNodes();
+            if (IsKeyPressed(keyboardState, Keys.F5)) _presentationMode = !_presentationMode;
+
             if (ctrl && IsKeyPressed(keyboardState, Keys.C)) CopyNodes();
             if (ctrl && IsKeyPressed(keyboardState, Keys.V)) PasteNodes();
 
@@ -205,6 +210,8 @@ namespace ToyConEngine
                 base.Update(gameTime);
                 return;
             }
+
+            if (_presentationMode) return; // Skip UI updates in presentation mode
 
             bool uiCaptured = UpdateUI(mouseState);
 
@@ -412,6 +419,30 @@ namespace ToyConEngine
         {
             GraphicsDevice.Clear(new Color(30, 30, 30)); // Dark background
 
+            if (_presentationMode)
+            {
+                GraphicsDevice.Clear(Color.Black);
+                _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
+                
+                var screens = _engine.Nodes.OfType<ScreenNode>().ToList();
+                if (screens.Count > 0)
+                {
+                    // Draw the first screen node scaled to fit
+                    var screen = screens[0];
+                    if (!_screenTextures.ContainsKey(screen)) _screenTextures[screen] = new Texture2D(GraphicsDevice, ScreenNode.Width, ScreenNode.Height);
+                    _screenTextures[screen].SetData(screen.Buffer);
+
+                    int scale = Math.Min(ClientBounds.Width / ScreenNode.Width, ClientBounds.Height / ScreenNode.Height);
+                    int w = ScreenNode.Width * scale;
+                    int h = ScreenNode.Height * scale;
+                    int x = (ClientBounds.Width - w) / 2;
+                    int y = (ClientBounds.Height - h) / 2;
+                    _spriteBatch.Draw(_screenTextures[screen], new Rectangle(x, y, w, h), Color.White);
+                }
+                _spriteBatch.End();
+                return;
+            }
+
             _spriteBatch.Begin();
 
             // Draw Wires
@@ -461,6 +492,13 @@ namespace ToyConEngine
                     color = colorOutput.DisplayColor;
                 }
                 if (node is BeepOutputNode) color = Color.HotPink;
+                if (node is ScreenNode screenNode)
+                {
+                    color = Color.Black;
+                    if (!_screenTextures.ContainsKey(screenNode)) _screenTextures[screenNode] = new Texture2D(GraphicsDevice, ScreenNode.Width, ScreenNode.Height);
+                    _screenTextures[screenNode].SetData(screenNode.Buffer);
+                    // We'll draw the texture after the rect
+                }
 
                 if (_selectedNodes.Contains(node))
                     color = Color.Lerp(color, Color.White, 0.3f);
@@ -469,6 +507,12 @@ namespace ToyConEngine
 
                 // Border
                 DrawHollowRect(_spriteBatch, rect, _selectedNodes.Contains(node) ? Color.Yellow : Color.White, _selectedNodes.Contains(node) ? 3 : 1);
+
+                if (node is ScreenNode sn && _screenTextures.ContainsKey(sn))
+                {
+                    // Draw screen content inside node
+                    _spriteBatch.Draw(_screenTextures[sn], new Rectangle(rect.Center.X - 32, rect.Center.Y - 20, 64, 64), Color.White);
+                }
 
                 // Draw Input Ports
                 for (int i = 0; i < node.Inputs.Count; i++)
@@ -1224,6 +1268,7 @@ namespace ToyConEngine
             else if (original is CursorNode) clone = new CursorNode();
             else if (original is ColorOutputNode) clone = new ColorOutputNode();
             else if (original is BeepOutputNode bp) { clone = new BeepOutputNode(); ((BeepOutputNode)clone).SoundName = bp.SoundName; }
+            else if (original is ScreenNode) clone = new ScreenNode();
             else if (original is ScriptImporterNode s) { clone = new ScriptImporterNode(); ((ScriptImporterNode)clone).Script = s.Script; }
             
             if (clone != null)
@@ -1362,6 +1407,11 @@ namespace ToyConEngine
                 width = 120;
                 height = 80;
             }
+            if (node is ScreenNode)
+            {
+                width = 140;
+                height = 140;
+            }
             _nodeRects[node] = new Rectangle(x, y, width, height);
         }
 
@@ -1482,6 +1532,7 @@ namespace ToyConEngine
                     else if (type == "CursorNode") n = new CursorNode();
                     else if (type == "ColorOutputNode") n = new ColorOutputNode();
                     else if (type == "BeepOutputNode") n = new BeepOutputNode();
+                    else if (type == "ScreenNode") n = new ScreenNode();
                     else if (type == "ScriptImporterNode") n = new ScriptImporterNode();
 
                     if (n != null)
