@@ -1600,11 +1600,11 @@ namespace ToyConEngine
                 var sourceDir = AppDomain.CurrentDomain.BaseDirectory;
                 var destDir = Path.GetDirectoryName(filename);
                 var tempDir = Path.Combine(destDir, "ToyCon_Temp_Build");
-                var exeName = Path.GetFileName(currentExe);
+                var exeName = "ToyConEngine.exe";
 
                 // 1. Create Temp Directory
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-                Directory.CreateDirectory(tempDir);
+                //if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+                try {Directory.CreateDirectory(tempDir); } catch (Exception e) { throw e; }
 
                 // 2. Copy all files from running directory to temp directory
                 CopyDirectory(sourceDir, tempDir);
@@ -1655,7 +1655,7 @@ namespace ToyConEngine
                 }
 
                 // 6. Cleanup
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+                //if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
             }
             catch { /* Handle permission errors etc */ }
         }
