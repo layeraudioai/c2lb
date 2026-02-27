@@ -73,6 +73,8 @@ namespace ToyConEngine
         private List<float> _tpsHistory = new List<float>();
         private const int MaxTpsHistory = 60;
 
+
+        private double tps = 60;
         private bool optimized = false;
 
         public ToyConGame()
@@ -88,6 +90,7 @@ namespace ToyConEngine
             _graphics.SynchronizeWithVerticalRetrace = false;
             _benchmarkMode = !_benchmarkMode; 
             _benchmarkResult = "Benchmarking...";
+            optimized = false;
         }
 
         protected override void Initialize()
@@ -178,7 +181,6 @@ namespace ToyConEngine
 
         private void benchBiotch(GameTime gameTime) {
             if (!optimized) { nsPerTick = (gameTime.TotalGameTime.TotalSeconds - gameTime.ElapsedGameTime.TotalSeconds)/16; }
-            if (nsPerTick > 1152000) { optimized=true; }
             if  (_benchmarkMode || ((rnd.Next(0,100000000) > 98969492)&&!optimized))
             {
                 if (!_benchmarkMode) TargetElapsedTime = TimeSpan.FromSeconds(1.0 / (10000*nsPerTick));
@@ -195,7 +197,7 @@ namespace ToyConEngine
                 }
                 sw.Stop();
 
-                double tps = iterations / sw.Elapsed.TotalSeconds;
+                tps = iterations / sw.Elapsed.TotalSeconds;
                 nsPerTick = 1000000.0 / tps;
 
                 _benchmarkResult = $"Magic Number: {nsPerTick:F8}ns\n({tps:F0} TPS)";
@@ -203,9 +205,10 @@ namespace ToyConEngine
             }
             else
             {
-                _engine.Tick(new GameTime(gameTime.ElapsedGameTime, new TimeSpan((long)nsPerTick)));
+                _engine.Tick(new GameTime(new TimeSpan(), new TimeSpan((long)nsPerTick)));
                 _tpsCount++;
             }
+            if (tps > 1152000) { optimized=true; }
         }
 
         protected override void Update(GameTime gameTime)
@@ -238,7 +241,7 @@ namespace ToyConEngine
             _tpsElapsed += gameTime.ElapsedGameTime.TotalSeconds;
             if (_tpsElapsed >= 1.0)
             {
-                _tpsString = $"TPS: {_tpsCount}";
+                _tpsString = $"FPS: {_tpsCount}";
                 _tpsHistory.Add(_tpsCount);
                 if (_tpsHistory.Count > MaxTpsHistory) _tpsHistory.RemoveAt(0);
                 _tpsCount = 0;
