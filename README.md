@@ -7,7 +7,7 @@
 *tereaseeea: in root type `build content` if first build, `content` updates content.mgcb for ya
 *FORE!: if re-building type `build clean content` to do a clean rebuild with content repopulating
 *hive.: for packing to single exe type `build tools pack`, `build tools clean pack`, `build tools content pack`, or `build tools content clean pack`
-*       unless you have the loader and packer exes in tools already from dir2exe, if so, same as above but with `tools`
+*       unless you have the loader and packer exes in tools already from dir2exe, if so, same as above but without `tools`
 *
 included font: arial (compiled as xnb)
 included samples: GINTRO - BOOM BAP DRUM KIT VOL.1 (compiled as xnb)
