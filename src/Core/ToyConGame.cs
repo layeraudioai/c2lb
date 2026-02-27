@@ -73,6 +73,8 @@ namespace ToyConEngine
         private List<float> _tpsHistory = new List<float>();
         private const int MaxTpsHistory = 60;
 
+        private bool optimized = false;
+
         public ToyConGame()
         {
             _graphics = new GraphicsDeviceManager(this);
@@ -175,9 +177,9 @@ namespace ToyConEngine
         }
 
         private void benchBiotch(GameTime gameTime) {
-            nsPerTick = (gameTime.TotalGameTime.TotalSeconds - gameTime.ElapsedGameTime.TotalSeconds)/16;
-            //if (_benchmarkMode)
-            if  (_benchmarkMode || (rnd.Next(0,100000000) > 98969492))
+            if (!optimized) { nsPerTick = (gameTime.TotalGameTime.TotalSeconds - gameTime.ElapsedGameTime.TotalSeconds)/16; }
+            if (nsPerTick > 1152000) { optimized=true; }
+            if  (_benchmarkMode || ((rnd.Next(0,100000000) > 98969492)&&!optimized))
             {
                 if (!_benchmarkMode) TargetElapsedTime = TimeSpan.FromSeconds(1.0 / (10000*nsPerTick));
                 // Run benchmark: execute Tick as many times as possible in 25ms
@@ -201,7 +203,7 @@ namespace ToyConEngine
             }
             else
             {
-                _engine.Tick(new GameTime(gameTime.TotalGameTime, new TimeSpan((long)nsPerTick)));
+                _engine.Tick(new GameTime(gameTime.ElapsedGameTime, new TimeSpan((long)nsPerTick)));
                 _tpsCount++;
             }
         }
