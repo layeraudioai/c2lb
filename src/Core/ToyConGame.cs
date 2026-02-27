@@ -17,6 +17,8 @@ namespace ToyConEngine
     // --- MONOGAME IMPLEMENTATION ---
     public class ToyConGame : Game
     {
+
+        private Random rnd = new Random();
         public static Rectangle ClientBounds { get; private set; }
         private GraphicsDeviceManager _graphics;
         private SpriteBatch _spriteBatch;
@@ -59,8 +61,17 @@ namespace ToyConEngine
         private Node _connectionStartNode = null;
         private int _connectionStartIndex = -1;
         private string _inputValueBuffer = "";
+        private bool _benchmarkMode = false;
+        private string _benchmarkResult = "";
         
         private const string StandaloneMagic = "TOYCON_PKG";
+
+        private double nsPerTick = 0;
+        private int _tpsCount = 0;
+        private double _tpsElapsed = 0;
+        private string _tpsString = "TPS: 0";
+        private List<float> _tpsHistory = new List<float>();
+        private const int MaxTpsHistory = 60;
 
         public ToyConGame()
         {
@@ -69,6 +80,12 @@ namespace ToyConEngine
             IsMouseVisible = true;
             Window.AllowUserResizing = true;
             Window.Title = "ToyCon Engine - MonoGame Port";
+        }
+
+        private void setupBench() {
+            _graphics.SynchronizeWithVerticalRetrace = false;
+            _benchmarkMode = !_benchmarkMode; 
+            _benchmarkResult = "Benchmarking...";
         }
 
         protected override void Initialize()
@@ -80,6 +97,10 @@ namespace ToyConEngine
                 { "File", new List<(string, Func<Node>)> {
                     ("Save", () => { SaveLayout("design.toy"); return null; }),
                     ("Load", () => { LoadLayout("design.toy"); return null; }),
+                    ("Benchmark", () => { 
+                        setupBench();
+                        return null; 
+                    }),
                     ("Export EXE", () => { 
                         var path = PromptForSavePath("ToyCon_Export.exe", "Executable|*.exe");
                         if (path != null) ExportStandalone(path); 
@@ -153,6 +174,38 @@ namespace ToyConEngine
             if (_availableSounds.Count == 0) _availableSounds.Add("Beep");
         }
 
+        private void benchBiotch(GameTime gameTime) {
+            nsPerTick = (gameTime.TotalGameTime.TotalSeconds - gameTime.ElapsedGameTime.TotalSeconds)/16;
+            //if (_benchmarkMode)
+            if  (_benchmarkMode || (rnd.Next(0,100000000) > 98969492))
+            {
+                if (!_benchmarkMode) TargetElapsedTime = TimeSpan.FromSeconds(1.0 / (10000*nsPerTick));
+                // Run benchmark: execute Tick as many times as possible in 25ms
+                int iterations = 0;
+                var sw = Stopwatch.StartNew();
+                long limitMs = rnd.Next(0,42066964)/10000000;
+
+                while (sw.ElapsedMilliseconds < limitMs)
+                {
+                    _engine.Tick(gameTime);
+                    iterations++;
+                    _tpsCount++;
+                }
+                sw.Stop();
+
+                double tps = iterations / sw.Elapsed.TotalSeconds;
+                nsPerTick = 1000000.0 / tps;
+
+                _benchmarkResult = $"Magic Number: {nsPerTick:F8}ns\n({tps:F0} TPS)";
+                _benchmarkMode = false;
+            }
+            else
+            {
+                _engine.Tick(new GameTime(gameTime.TotalGameTime, new TimeSpan((long)nsPerTick)));
+                _tpsCount++;
+            }
+        }
+
         protected override void Update(GameTime gameTime)
         {
             ClientBounds = Window.ClientBounds;
@@ -178,7 +231,17 @@ namespace ToyConEngine
             }
 
             // 1. Logic Tick
-            _engine.Tick(gameTime);
+            benchBiotch(gameTime);
+
+            _tpsElapsed += gameTime.ElapsedGameTime.TotalSeconds;
+            if (_tpsElapsed >= 1.0)
+            {
+                _tpsString = $"TPS: {_tpsCount}";
+                _tpsHistory.Add(_tpsCount);
+                if (_tpsHistory.Count > MaxTpsHistory) _tpsHistory.RemoveAt(0);
+                _tpsCount = 0;
+                _tpsElapsed -= 1.0;
+            }
 
             // 2. Handle Audio Outputs
             foreach (var node in _engine.Nodes)
@@ -444,6 +507,37 @@ namespace ToyConEngine
                     int y = (ClientBounds.Height - h) / 2;
                     _spriteBatch.Draw(_screenTextures[screen], new Rectangle(x, y, w, h), Color.White);
                 }
+
+                // Draw Buttons and Colors in Presentation Mode
+                foreach (var kvp in _nodeRects)
+                {
+                    var node = kvp.Key;
+                    var rect = kvp.Value;
+
+                    if (node is ButtonNode btn)
+                    {
+                        Color c = btn.IsPressed ? Color.Gray : Color.DarkGray;
+                        _spriteBatch.Draw(_pixel, rect, c);
+                        DrawHollowRect(_spriteBatch, rect, Color.White, 2);
+                        if (_font != null)
+                        {
+                            Vector2 textSize = _font.MeasureString(btn.Name);
+                            _spriteBatch.DrawString(_font, btn.Name, rect.Center.ToVector2() - textSize / 2, Color.White);
+                        }
+                    }
+                    else if (node is ColorOutputNode col)
+                    {
+                        _spriteBatch.Draw(_pixel, rect, col.DisplayColor);
+                        DrawHollowRect(_spriteBatch, rect, Color.White, 2);
+                    }
+                }
+
+                if (_font != null) 
+                {
+                    _spriteBatch.DrawString(_font, _tpsString, new Vector2(10, 10), Color.Lime);
+                    DrawTpsGraph(_spriteBatch, new Rectangle(10, 35, 100, 30));
+                }
+
                 _spriteBatch.End();
                 return;
             }
@@ -559,6 +653,23 @@ namespace ToyConEngine
             }
 
             DrawUI();
+
+            if (_font != null)
+            {
+                Vector2 sz = _font.MeasureString(_tpsString);
+                _spriteBatch.DrawString(_font, _tpsString, new Vector2(ClientBounds.Width - sz.X - 10, 5), Color.Lime);
+                DrawTpsGraph(_spriteBatch, new Rectangle(ClientBounds.Width - 110, 30, 100, 30));
+            }
+
+            if (!string.IsNullOrEmpty(_benchmarkResult))
+            {
+                Vector2 sz = _font?.MeasureString(_benchmarkResult) ?? Vector2.Zero;
+                Vector2 pos = new Vector2((ClientBounds.Width - sz.X) / 2, 50);
+                
+                _spriteBatch.Draw(_pixel, new Rectangle((int)pos.X - 10, (int)pos.Y - 10, (int)sz.X + 20, (int)sz.Y + 20), new Color(0, 0, 0, 200));
+                DrawHollowRect(_spriteBatch, new Rectangle((int)pos.X - 10, (int)pos.Y - 10, (int)sz.X + 20, (int)sz.Y + 20), Color.White);
+                if (_font != null) _spriteBatch.DrawString(_font, _benchmarkResult, pos, Color.White);
+            }
 
             DrawOverlay();
 
@@ -961,7 +1072,10 @@ namespace ToyConEngine
                 if (change)
                 {
                     foreach (var n in _selectedNodes.OfType<MathNode>())
+                    {
                         n.Op = (MathNode.Operation)(((int)n.Op + dir) % 6); // 6 ops now
+                        n.Name = $"Math ({n.Op})";
+                    }
                 }
             }
             else if (_inspectedNode is LogicNode lNode)
@@ -976,7 +1090,10 @@ namespace ToyConEngine
                 if (change)
                 {
                     foreach (var n in _selectedNodes.OfType<LogicNode>())
+                    {
                         n.Type = (LogicNode.LogicType)(((int)n.Type + dir) % 6);
+                        n.Name = $"Logic ({n.Type})";
+                    }
                 }
             }
             else if (_inspectedNode is KeyNode kNode)
@@ -1468,6 +1585,30 @@ namespace ToyConEngine
             return (p - projection).Length();
         }
 
+        private void DrawTpsGraph(SpriteBatch sb, Rectangle rect)
+        {
+            if (_tpsHistory.Count < 2) return;
+
+            sb.Draw(_pixel, rect, new Color(0, 0, 0, 100));
+            DrawHollowRect(sb, rect, Color.Gray, 1);
+
+            float maxVal = 600000000f;
+            foreach(var v in _tpsHistory) if(v > maxVal) maxVal = v;
+
+            float xStep = (float)rect.Width / (MaxTpsHistory - 1);
+            
+            for (int i = 0; i < _tpsHistory.Count - 1; i++)
+            {
+                float v1 = _tpsHistory[i];
+                float v2 = _tpsHistory[i+1];
+
+                Vector2 p1 = new Vector2(rect.X + i * xStep, rect.Bottom - (v1 / maxVal) * rect.Height);
+                Vector2 p2 = new Vector2(rect.X + (i + 1) * xStep, rect.Bottom - (v2 / maxVal) * rect.Height);
+                
+                DrawLine(sb, p1, p2, Color.Lime, 1);
+            }
+        }
+
         // Helper to draw lines using the 1x1 pixel texture
         private void DrawLine(SpriteBatch sb, Vector2 start, Vector2 end, Color color, float thickness = 2f)
         {
@@ -1664,7 +1805,7 @@ namespace ToyConEngine
                         ArgumentList = { tempDir, exportPath, filename },
                         UseShellExecute = false,
                         CreateNoWindow = true,
-                        WorkingDirectory = tempDir
+                        WorkingDirectory = Path.GetDirectoryName(packerPath)
                     };
                     var p = Process.Start(psi);
                     p.WaitForExit();
@@ -1755,8 +1896,8 @@ namespace ToyConEngine
             if (string.IsNullOrEmpty(data)) return;
             try {
                 if (node is ConstantNode c) c.StoredValue = float.Parse(data);
-                if (node is MathNode m) m.Op = Enum.Parse<MathNode.Operation>(data);
-                if (node is LogicNode l) l.Type = Enum.Parse<LogicNode.LogicType>(data);
+                if (node is MathNode m) { m.Op = Enum.Parse<MathNode.Operation>(data); m.Name = $"Math ({m.Op})"; }
+                if (node is LogicNode l) { l.Type = Enum.Parse<LogicNode.LogicType>(data); l.Name = $"Logic ({l.Type})"; }
                 if (node is KeyNode k) { k.Key = Enum.Parse<Keys>(data); k.Name = $"Key ({k.Key})"; }
                 if (node is ButtonNode b) b.IsToggle = bool.Parse(data);
                 if (node is BeepOutputNode beep) beep.SoundName = data;
