@@ -10,6 +10,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace ToyConEngine
 {
@@ -1628,48 +1629,21 @@ namespace ToyConEngine
                     stream.Write(magicBytes, 0, magicBytes.Length);
                 }
 
-                // 2. Prepare data
-                var tempExePath = exportPath;
-                if (!File.Exists(exportPath))
-                {
-                    var exes = Directory.GetFiles(tempDir, "*.exe");
-                    foreach (var exe in exes)
-                    {
-                        var name = Path.GetFileName(exe);
-                        if (name.Equals("packer.exe", StringComparison.OrdinalIgnoreCase)) continue;
-                        if (name.Equals("loader.exe", StringComparison.OrdinalIgnoreCase)) continue;
-                        tempExePath = exe;
-                        break;
-                    }
-                }
-
-                if (File.Exists(tempExePath))
-                {
-                    graphData = SerializeGraph();
-                    dataBytes = Encoding.UTF8.GetBytes(graphData);
-                    lengthBytes = BitConverter.GetBytes(dataBytes.Length);
-                    magicBytes = Encoding.UTF8.GetBytes(StandaloneMagic); // 10 bytes
-
-                    // 3. Append data to the end of the new executable
-                    using (var stream = new FileStream(tempExePath, FileMode.Append))
-                    {
-                        stream.Write(dataBytes, 0, dataBytes.Length);
-                        stream.Write(lengthBytes, 0, lengthBytes.Length);
-                        stream.Write(magicBytes, 0, magicBytes.Length);
-                    }
-                }
-
                 // 4. Find Packer
-                string packerPath = Path.Combine(sourceDir, "tools", "packer.exe");
+                string baseDir = Path.GetDirectoryName(Environment.ProcessPath);
+                string packerPath = Path.Combine(baseDir, "tools", "packer.exe");
+                string loaderPath = Path.Combine(baseDir, "tools", "loader.exe");
+
                 if (!File.Exists(packerPath))
                 {
-                    var dir = new DirectoryInfo(sourceDir);
+                    var dir = new DirectoryInfo(baseDir);
                     while (dir != null)
                     {
                         var check = Path.Combine(dir.FullName, "tools", "packer.exe");
                         if (File.Exists(check))
                         {
                             packerPath = check;
+                            loaderPath = Path.Combine(dir.FullName, "tools", "loader.exe");
                             break;
                         }
                         dir = dir.Parent;
@@ -1679,9 +1653,15 @@ namespace ToyConEngine
                 // 5. Run Packer
                 if (File.Exists(packerPath))
                 {
+                    // Ensure loader.exe is present in temp dir for packer
+                    if (File.Exists(loaderPath))
+                    {
+                        File.Copy(loaderPath, Path.Combine(tempDir, "loader.exe"), true);
+                    }
+
                     var psi = new ProcessStartInfo(packerPath)
                     {
-                        ArgumentList = { tempDir, tempExePath, filename },
+                        ArgumentList = { tempDir, exportPath, filename },
                         UseShellExecute = false,
                         CreateNoWindow = true,
                         WorkingDirectory = tempDir
