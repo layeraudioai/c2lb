@@ -8,4 +8,6 @@ mgcb.exe
 Content/*.wav
 Content/Font.spritefont
 *.exe
-*/*.exe
+tools/loader.exe
+tools/packer.exe
+Content/Content.mgcb
