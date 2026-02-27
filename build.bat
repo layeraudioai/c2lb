@@ -1,7 +1,14 @@
 echo off
 cls
 echo if y'all dun wan do make clean then hey man screw you
-for %%f in (%*) do (
+for %%f in (%*%) do (
+    if "%%f"=="tools" (
+        del tools\*.exe
+        rmdir /S /Q tools\*\
+        cc -o loader/loader.exe -DLOADER dir2exe.c
+        cc -o packer/packer.exe -DPACKER dir2exe.c
+        move tools\*.exe .
+    )
     if "%%f"=="clean" (
         rmdir /S /Q bin
         rmdir /S /Q obj
@@ -11,6 +18,8 @@ for %%f in (%*) do (
     )
     if "%%f"=="content" (
         cd Content
+        del Content.mgcb
+        copy Template.mgcb Content.mgcb
         for %%f in (*.spritefont) do (
             findstr /I /L /C:"#begin %%f" Content.mgcb >nul || (
                 echo #begin %%f>> Content.mgcb
@@ -36,7 +45,7 @@ for %%f in (%*) do (
 cls
 dotnet build --configuration=release /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true
 echo Build complete!
-for %%f in (%*) do (
+for %%f in (%*%) do (
     if "%%f"=="pack" (
         mkdir bin\Release\net8.0\tools
         copy tools\*.exe bin\Release\net8.0\tools
