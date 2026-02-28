@@ -100,8 +100,14 @@ namespace ToyConEngine
             _menus = new Dictionary<string, List<(string Name, Func<Node> Factory)>>
             {
                 { "File", new List<(string, Func<Node>)> {
-                    ("Save", () => { SaveLayout("design.toy"); return null; }),
-                    ("Load", () => { LoadLayout("design.toy"); return null; }),
+                    ("Save", () => { 
+                        var path = PromptForSavePath("design.toy", "Nintendo Labo ToyCon Garage Design File|*.toy");
+                        SaveLayout(path);
+                        return null; }),
+                    ("Load", () => { 
+                        var path = PromptForOpenPath("design.toy", "Nintendo Labo ToyCon Garage Design File|*.toy");
+                        LoadLayout(path);
+                        return null; }),
                     ("Benchmark", () => { 
                         setupBench();
                         return null; 
@@ -119,7 +125,8 @@ namespace ToyConEngine
                     ("Key", () => new KeyNode()),
                     ("Timer", () => new TimerNode()),
                     ("Cursor", () => new CursorNode()),
-                    ("Random", () => new RandomNode())
+                    ("Random", () => new RandomNode()),
+                    ("Toy Input", () => new ToyInputNode())
                 }},
                 { "Middle", new List<(string, Func<Node>)> {
                     ("Math", () => new MathNode(MathNode.Operation.Add)),
@@ -129,10 +136,12 @@ namespace ToyConEngine
                 { "Output", new List<(string, Func<Node>)> {
                     ("Color", () => new ColorOutputNode()),
                     ("Beep", () => new BeepOutputNode()),
-                    ("Screen", () => new ScreenNode())
+                    ("Screen", () => new ScreenNode()),
+                    ("Toy Output", () => new ToyOutputNode())
                 }},
                 { "Import", new List<(string, Func<Node>)> {
-                    ("Script", () => new ScriptImporterNode())
+                    ("Script", () => new ScriptImporterNode()),
+                    ("Toy Project", () => new ToyNode())
                 }}
             };
 
@@ -208,7 +217,7 @@ namespace ToyConEngine
                 _engine.Tick(new GameTime(new TimeSpan(), new TimeSpan((long)nsPerTick)));
                 _tpsCount++;
             }
-            if (tps > 1152000) { optimized=true; }
+            if (tps > 1152000) { optimized=true; _engine.Tick(gameTime); } else { optimized = false;  _engine.Tick(new GameTime(new TimeSpan(), new TimeSpan((long)nsPerTick))); }
         }
 
         protected override void Update(GameTime gameTime)
@@ -603,6 +612,50 @@ namespace ToyConEngine
                     _screenTextures[screenNode].SetData(screenNode.Buffer);
                     // We'll draw the texture after the rect
                 }
+                if (node is ToyNode toyNode)
+                {
+                    var internalScreen = toyNode.GetScreenNode();
+                    if (internalScreen != null)
+                    {
+                        if (!_screenTextures.ContainsKey(internalScreen)) _screenTextures[internalScreen] = new Texture2D(GraphicsDevice, ScreenNode.Width, ScreenNode.Height);
+                        _screenTextures[internalScreen].SetData(internalScreen.Buffer);
+                        // We'll draw the texture after the rect
+                    }
+
+                    // Draw internal graph design
+                    if (toyNode.InternalRects.Count > 0)
+                    {
+                        int minX = int.MaxValue, minY = int.MaxValue, maxX = int.MinValue, maxY = int.MinValue;
+                        foreach(var r in toyNode.InternalRects.Values)
+                        {
+                            if (r.X < minX) minX = r.X;
+                            if (r.Y < minY) minY = r.Y;
+                            if (r.Right > maxX) maxX = r.Right;
+                            if (r.Bottom > maxY) maxY = r.Bottom;
+                        }
+                        
+                        if (maxX > minX && maxY > minY)
+                        {
+                            float graphW = maxX - minX + 100; // padding
+                            float graphH = maxY - minY + 100;
+                            float scale = Math.Min(rect.Width / graphW, rect.Height / graphH);
+                            Vector2 offset = new Vector2(rect.X + rect.Width/2 - (minX + graphW/2 - 50)*scale, rect.Y + rect.Height/2 - (minY + graphH/2 - 50)*scale);
+
+                            foreach(var n in toyNode.InternalEngine.Nodes)
+                            {
+                                if (toyNode.InternalRects.TryGetValue(n, out Rectangle nr))
+                                {
+                                    Rectangle drawRect = new Rectangle(
+                                        (int)(nr.X * scale + offset.X), 
+                                        (int)(nr.Y * scale + offset.Y), 
+                                        (int)(nr.Width * scale), 
+                                        (int)(nr.Height * scale));
+                                    _spriteBatch.Draw(_pixel, drawRect, new Color(100, 100, 100, 100));
+                                }
+                            }
+                        }
+                    }
+                }
 
                 if (_selectedNodes.Contains(node))
                     color = Color.Lerp(color, Color.White, 0.3f);
@@ -616,6 +669,11 @@ namespace ToyConEngine
                 {
                     // Draw screen content inside node
                     _spriteBatch.Draw(_screenTextures[sn], new Rectangle(rect.Center.X - 32, rect.Center.Y - 20, 64, 64), Color.White);
+                }
+                if (node is ToyNode tn && tn.GetScreenNode() is ScreenNode tsn && _screenTextures.ContainsKey(tsn))
+                {
+                    // Draw internal screen content inside node
+                    _spriteBatch.Draw(_screenTextures[tsn], new Rectangle(rect.Center.X - 32, rect.Center.Y - 20, 64, 64), Color.White);
                 }
 
                 // Draw Input Ports
@@ -1181,6 +1239,39 @@ namespace ToyConEngine
                     _inspectedNode = null;
                 }
             }
+            else if (_inspectedNode is ToyNode toyNode)
+            {
+                Rectangle btnRect = new Rectangle(x, y + 30, 120, 30);
+                if (clicked && btnRect.Contains(mousePos))
+                {
+                    string path = PromptForOpenPath("Nintendo Labo ToyCon Garage Design File|*.toy");
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        toyNode.FilePath = path;
+                        LoadToyNode(toyNode);
+                    }
+                }
+            }
+            else if (_inspectedNode is ToyInputNode tin)
+            {
+                Rectangle minusRect = new Rectangle(x, y, 30, 30);
+                Rectangle plusRect = new Rectangle(x + 100, y, 30, 30);
+                if (clicked && minusRect.Contains(mousePos)) { tin.Index = Math.Max(0, tin.Index - 1); _inputValueBuffer = tin.Index.ToString(); }
+                if (clicked && plusRect.Contains(mousePos)) { tin.Index = Math.Min(9, tin.Index + 1); _inputValueBuffer = tin.Index.ToString(); }
+                
+                HandleTextInput(keyboard, ref _inputValueBuffer);
+                if (int.TryParse(_inputValueBuffer, out int val)) tin.Index = Math.Clamp(val, 0, 9);
+            }
+            else if (_inspectedNode is ToyOutputNode ton)
+            {
+                Rectangle minusRect = new Rectangle(x, y, 30, 30);
+                Rectangle plusRect = new Rectangle(x + 100, y, 30, 30);
+                if (clicked && minusRect.Contains(mousePos)) { ton.Index = Math.Max(0, ton.Index - 1); _inputValueBuffer = ton.Index.ToString(); }
+                if (clicked && plusRect.Contains(mousePos)) { ton.Index = Math.Min(9, ton.Index + 1); _inputValueBuffer = ton.Index.ToString(); }
+                
+                HandleTextInput(keyboard, ref _inputValueBuffer);
+                if (int.TryParse(_inputValueBuffer, out int val)) ton.Index = Math.Clamp(val, 0, 9);
+            }
         }
 
         private void DrawOverlay()
@@ -1281,6 +1372,41 @@ namespace ToyConEngine
                     _spriteBatch.DrawString(_font, "Compile", new Vector2(x + 10, y + 155), Color.White);
                 }
             }
+            else if (_inspectedNode is ToyNode toyNode)
+            {
+                if (_font != null)
+                {
+                    string fileName = string.IsNullOrEmpty(toyNode.FilePath) ? "None" : Path.GetFileName(toyNode.FilePath);
+                    _spriteBatch.DrawString(_font, $"File: {fileName}", new Vector2(x, y), Color.White);
+                }
+
+                Rectangle btnRect = new Rectangle(x, y + 30, 120, 30);
+                _spriteBatch.Draw(_pixel, btnRect, Color.Gray);
+                DrawHollowRect(_spriteBatch, btnRect, Color.White);
+                if (_font != null) _spriteBatch.DrawString(_font, "Load Design", new Vector2(x + 10, y + 35), Color.White);
+            }
+            else if (_inspectedNode is ToyInputNode tin)
+            {
+                _spriteBatch.Draw(_pixel, new Rectangle(x, y, 30, 30), Color.Gray);
+                _spriteBatch.Draw(_pixel, new Rectangle(x + 100, y, 30, 30), Color.Gray);
+                if (_font != null)
+                {
+                    _spriteBatch.DrawString(_font, "-", new Vector2(x + 10, y + 5), Color.White);
+                    _spriteBatch.DrawString(_font, tin.Index.ToString(), new Vector2(x + 40, y + 5), Color.White);
+                    _spriteBatch.DrawString(_font, "+", new Vector2(x + 110, y + 5), Color.White);
+                }
+            }
+            else if (_inspectedNode is ToyOutputNode ton)
+            {
+                _spriteBatch.Draw(_pixel, new Rectangle(x, y, 30, 30), Color.Gray);
+                _spriteBatch.Draw(_pixel, new Rectangle(x + 100, y, 30, 30), Color.Gray);
+                if (_font != null)
+                {
+                    _spriteBatch.DrawString(_font, "-", new Vector2(x + 10, y + 5), Color.White);
+                    _spriteBatch.DrawString(_font, ton.Index.ToString(), new Vector2(x + 40, y + 5), Color.White);
+                    _spriteBatch.DrawString(_font, "+", new Vector2(x + 110, y + 5), Color.White);
+                }
+            }
         }
 
         private void HandleTextInput(KeyboardState current, ref string buffer)
@@ -1322,6 +1448,29 @@ namespace ToyConEngine
                 return null;
             }
             return defaultName;
+        }
+
+        private string PromptForOpenPath(string filter)
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                try
+                {
+                    string cmd = $"Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; $d.Filter = '{filter}'; if ($d.ShowDialog() -eq 'OK') {{ $d.FileName }}";
+                    var psi = new ProcessStartInfo("powershell", $"-command \"{cmd}\"")
+                    {
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        CreateNoWindow = true
+                    };
+                    using var p = Process.Start(psi);
+                    string res = p.StandardOutput.ReadToEnd().Trim();
+                    p.WaitForExit();
+                    return string.IsNullOrEmpty(res) ? null : res;
+                }
+                catch { }
+            }
+            return null;
         }
 
         private string GetClipboard()
@@ -1421,6 +1570,9 @@ namespace ToyConEngine
             else if (original is BeepOutputNode bp) { clone = new BeepOutputNode(); ((BeepOutputNode)clone).SoundName = bp.SoundName; }
             else if (original is ScreenNode) clone = new ScreenNode();
             else if (original is ScriptImporterNode s) { clone = new ScriptImporterNode(); ((ScriptImporterNode)clone).Script = s.Script; }
+            else if (original is ToyNode t) { clone = new ToyNode(); ((ToyNode)clone).FilePath = t.FilePath; LoadToyNode((ToyNode)clone); }
+            else if (original is ToyInputNode tin) { clone = new ToyInputNode(); ((ToyInputNode)clone).Index = tin.Index; }
+            else if (original is ToyOutputNode ton) { clone = new ToyOutputNode(); ((ToyOutputNode)clone).Index = ton.Index; }
             
             if (clone != null)
             {
@@ -1563,6 +1715,7 @@ namespace ToyConEngine
                 width = 140;
                 height = 140;
             }
+            if (node is ToyNode) { width = 160; height = 240; }
             _nodeRects[node] = new Rectangle(x, y, width, height);
         }
 
@@ -1672,13 +1825,13 @@ namespace ToyConEngine
             File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, filename), SerializeGraph());
         }
 
-        private void LoadLayoutFromLines(string[] lines)
+        private void LoadGraph(GraphEngine engine, string[] lines, Dictionary<Node, Rectangle> rects = null)
         {
-            _engine.Nodes.Clear();
-            _nodeRects.Clear();
-            _selectedNodes.Clear();
-            _inspectedNode = null;
-            _connectionStartNode = null;
+            engine.Nodes.Clear();
+            rects?.Clear();
+            
+            // Clear selection/inspection if we are loading the main graph
+            if (engine == _engine) { _selectedNodes.Clear(); _inspectedNode = null; _connectionStartNode = null; }
 
             if (lines.Length == 0 || lines[0] != "TOYCON_v1") return;
 
@@ -1709,11 +1862,23 @@ namespace ToyConEngine
                     else if (type == "BeepOutputNode") n = new BeepOutputNode();
                     else if (type == "ScreenNode") n = new ScreenNode();
                     else if (type == "ScriptImporterNode") n = new ScriptImporterNode();
+                    else if (type == "ToyNode") n = new ToyNode();
+                    else if (type == "ToyInputNode") n = new ToyInputNode();
+                    else if (type == "ToyOutputNode") n = new ToyOutputNode();
 
                     if (n != null)
                     {
                         ApplyNodeData(n, data);
-                        SpawnNodeAt(n, x, y);
+                        engine.Nodes.Add(n);
+                        if (rects != null)
+                        {
+                            int width = 100;
+                            int height = 60;
+                            if (n.Inputs.Count + n.Outputs.Count > 2) { width = 120; height = 80; }
+                            if (n is ScreenNode) { width = 140; height = 140; }
+                            if (n is ToyNode) { width = 160; height = 240; }
+                            rects[n] = new Rectangle(x, y, width, height);
+                        }
                         idToNode[id] = n;
                     }
                 }
@@ -1726,7 +1891,7 @@ namespace ToyConEngine
 
                     if (idToNode.ContainsKey(srcId) && idToNode.ContainsKey(tgtId))
                     {
-                        _engine.Connect(idToNode[srcId], srcSlot, idToNode[tgtId], tgtSlot);
+                        engine.Connect(idToNode[srcId], srcSlot, idToNode[tgtId], tgtSlot);
                     }
                 }
             }
@@ -1736,7 +1901,15 @@ namespace ToyConEngine
         {
             string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, filename);
             if (!File.Exists(path)) return;
-            LoadLayoutFromLines(File.ReadAllLines(path));
+            LoadGraph(_engine, File.ReadAllLines(path), _nodeRects);
+        }
+
+        private void LoadToyNode(ToyNode node)
+        {
+            if (string.IsNullOrEmpty(node.FilePath) || !File.Exists(node.FilePath)) return;
+            string[] lines = File.ReadAllLines(node.FilePath);
+            LoadGraph(node.InternalEngine, lines, node.InternalRects);
+            node.RefreshPorts();
         }
 
         private void ExportStandalone(string filename)
@@ -1876,7 +2049,7 @@ namespace ToyConEngine
 
                     string layout = Encoding.UTF8.GetString(data);
                     // Split by newline, handling both \r\n and \n
-                    LoadLayoutFromLines(layout.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None));
+                    LoadGraph(_engine, layout.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None), _nodeRects);
                     return true;
                 }
             }
@@ -1893,6 +2066,9 @@ namespace ToyConEngine
             if (node is BeepOutputNode beep) return beep.SoundName;
             if (node is CounterNode cnt) return cnt.Value.ToString();
             if (node is ScriptImporterNode s) return Convert.ToBase64String(Encoding.UTF8.GetBytes(s.Script));
+            if (node is ToyNode t) return Convert.ToBase64String(Encoding.UTF8.GetBytes(t.FilePath ?? ""));
+            if (node is ToyInputNode tin) return tin.Index.ToString();
+            if (node is ToyOutputNode ton) return ton.Index.ToString();
             return "";
         }
 
@@ -1908,6 +2084,9 @@ namespace ToyConEngine
                 if (node is BeepOutputNode beep) beep.SoundName = data;
                 if (node is CounterNode cnt) cnt.Value = float.Parse(data);
                 if (node is ScriptImporterNode s) s.Script = Encoding.UTF8.GetString(Convert.FromBase64String(data));
+                if (node is ToyNode t) { t.FilePath = Encoding.UTF8.GetString(Convert.FromBase64String(data)); LoadToyNode(t); }
+                if (node is ToyInputNode tin) tin.Index = int.Parse(data);
+                if (node is ToyOutputNode ton) ton.Index = int.Parse(data);
             } catch {}
         }
     }
