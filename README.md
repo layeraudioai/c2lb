@@ -1,3 +1,7 @@
+if your framerate seems low like < 1000fps, please, understand
+i have a benchmark under file -> benchmark that'll optimize to your pc
+
+
 *labo on windows
 *soon to have c to labo conversion
 
