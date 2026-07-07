@@ -19,7 +19,32 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#include <pthread.h>
 
+static int safe_path_combine(char* dest, size_t dest_size, const char* a, const char* b) {
+    size_t la = strlen(a);
+    size_t lb = strlen(b);
+    if (la + 1 + lb >= dest_size) return 0;
+    memcpy(dest, a, la);
+    dest[la] = '\\';
+    memcpy(dest + la + 1, b, lb + 1);
+    return 1;
+}
+
+#ifdef PACKER
+static int safe_path_join3(char* dest, size_t dest_size, const char* a, const char* b, const char* c) {
+    size_t la = strlen(a);
+    size_t lb = strlen(b);
+    size_t lc = strlen(c);
+    if (la + 1 + lb + 1 + lc >= dest_size) return 0;
+    memcpy(dest, a, la);
+    dest[la] = '\\';
+    memcpy(dest + la + 1, b, lb);
+    dest[la + 1 + lb] = '\\';
+    memcpy(dest + la + 1 + lb + 1, c, lc + 1);
+    return 1;
+}
+#endif
 
 #define MAGIC_BYTES "DIR2EXE" // 7 bytes + null
 
@@ -47,6 +72,27 @@ typedef struct {
 // This code runs when the final, packed executable is launched.
 // =================================================================================================
 
+// Structure to hold multiple parameters
+typedef struct {
+    int index;
+    int total;
+} UnpackPercent;
+
+//print percent unpacked
+void* printPercent(void* arg)
+{
+    UnpackPercent* percent = (UnpackPercent*)arg;
+    printf("total: %d", percent->total);
+    while (percent->index<percent->total) {
+        if (rand()%6642069>6631415) {
+            printf("\n\nindex: %d", percent->index);
+            printf("\n\npercent: %d", (int)(100*((float)percent->index/(float)percent->total)));
+        }
+    }
+    pthread_exit(NULL);
+    return NULL;
+}
+
 // Recursively deletes a directory and all its contents.
 BOOL recursive_delete_directory(const char* path) {
     char search_path[MAX_PATH];
@@ -62,7 +108,9 @@ BOOL recursive_delete_directory(const char* path) {
     do {
         if (strcmp(find_data.cFileName, ".") != 0 && strcmp(find_data.cFileName, "..") != 0) {
             char full_path[MAX_PATH];
-            snprintf(full_path, MAX_PATH, "%s\\%s", path, find_data.cFileName);
+            if (!safe_path_combine(full_path, MAX_PATH, path, find_data.cFileName)) {
+                continue;
+            }
 
             if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
                 recursive_delete_directory(full_path);
@@ -77,6 +125,8 @@ BOOL recursive_delete_directory(const char* path) {
 }
 
 int main(int argc, char* argv[]) {
+    (void)argc;
+    (void)argv;
     printf("booting.... please wait until the window opens\n");
     char self_path[MAX_PATH];
     GetModuleFileNameA(NULL, self_path, MAX_PATH);
@@ -87,7 +137,8 @@ int main(int argc, char* argv[]) {
     }
 
     // 1. Find and read the footer to locate the manifest.
-    fseek(f_self, -sizeof(ArchiveFooter), SEEK_END);
+    long footer_seek = -(long)sizeof(ArchiveFooter);
+    fseek(f_self, footer_seek, SEEK_END);
     ArchiveFooter footer;
     fread(&footer, sizeof(ArchiveFooter), 1, f_self);
 
@@ -98,7 +149,7 @@ int main(int argc, char* argv[]) {
 
     // 2. Read the manifest.
     fseek(f_self, footer.manifest_offset, SEEK_SET);
-    uint64_t entry_count;
+    int entry_count=0;
     fread(&entry_count, sizeof(uint64_t), 1, f_self);
 
     ManifestEntry* manifest = (ManifestEntry*)malloc(sizeof(ManifestEntry) * entry_count);
@@ -116,9 +167,18 @@ int main(int argc, char* argv[]) {
 
     // 4. Extract all files from the manifest.
     char* buffer = (char*)malloc(1024 * 1024); // 1MB buffer
-    for (uint64_t i = 0; i < entry_count; ++i) {
+    pthread_t thread;
+    UnpackPercent percent;
+    percent.index = 0;
+    percent.total = entry_count;
+    pthread_create(&thread, NULL, printPercent, &percent);
+
+    for (percent.index = 0; percent.index < percent.total; ++percent.index) {
         char out_path[MAX_PATH];
-        snprintf(out_path, MAX_PATH, "%s\\%s", temp_dir, manifest[i].relative_path);
+        if (!safe_path_combine(out_path, MAX_PATH, temp_dir, manifest[percent.index].relative_path)) {
+            printf("Warning: path too long for extraction: %s\\%s\n", temp_dir, manifest[percent.index].relative_path);
+            continue;
+        }
 
         // Create subdirectories if necessary
         for (char* p = out_path + strlen(temp_dir) + 1; *p; ++p) {
@@ -132,8 +192,8 @@ int main(int argc, char* argv[]) {
         FILE* f_out = fopen(out_path, "wb");
         if (!f_out) continue;
 
-        fseek(f_self, manifest[i].offset, SEEK_SET);
-        uint64_t remaining = manifest[i].size;
+        fseek(f_self, manifest[percent.index].offset, SEEK_SET);
+        uint64_t remaining = manifest[percent.index].size;
         while (remaining > 0) {
             size_t to_read = (remaining > 1024 * 1024) ? 1024 * 1024 : remaining;
             fread(buffer, 1, to_read, f_self);
@@ -142,7 +202,7 @@ int main(int argc, char* argv[]) {
         }
         fclose(f_out);
 
-        if (manifest[i].is_executable) {
+        if (manifest[percent.index].is_executable) {
             strcpy(main_exe_path, out_path);
         }
     }
@@ -150,6 +210,8 @@ int main(int argc, char* argv[]) {
     fclose(f_self);
 
     DWORD exit_code = 1;
+
+    pthread_join(thread, NULL);
 
     // 5. Run the main executable and wait for it to finish.
     if (strlen(main_exe_path) > 0) {
@@ -174,6 +236,7 @@ int main(int argc, char* argv[]) {
     free(manifest);
     return exit_code;
 }
+
 #endif
 #ifdef PACKER
 // =================================================================================================
@@ -213,7 +276,11 @@ void append_file_to_archive(FILE* f_archive, const char* file_path, ManifestEntr
 // Recursively walks a directory and adds files to the manifest list.
 void walk_directory(const char* base_path, const char* current_path, FILE* f_archive, ManifestNode** head) {
     char search_path[MAX_PATH];
-    snprintf(search_path, MAX_PATH, "%s\\%s\\*", base_path, current_path);
+    if (strlen(current_path) == 0) {
+        if (!safe_path_combine(search_path, MAX_PATH, base_path, "*")) return;
+    } else {
+        if (!safe_path_join3(search_path, MAX_PATH, base_path, current_path, "*")) return;
+    }
 
     WIN32_FIND_DATAA find_data;
     HANDLE h_find = FindFirstFileA(search_path, &find_data);
@@ -225,8 +292,13 @@ void walk_directory(const char* base_path, const char* current_path, FILE* f_arc
             char full_path[MAX_PATH];
             char relative_path[MAX_PATH];
 
-            snprintf(full_path, MAX_PATH, "%s\\%s\\%s", base_path, current_path, find_data.cFileName);
-            snprintf(relative_path, MAX_PATH, "%s%s%s", current_path, (strlen(current_path) > 0 ? "\\" : ""), find_data.cFileName);
+            if (strlen(current_path) == 0) {
+                if (!safe_path_combine(full_path, MAX_PATH, base_path, find_data.cFileName)) continue;
+                if (!safe_path_combine(relative_path, MAX_PATH, "", find_data.cFileName)) continue;
+            } else {
+                if (!safe_path_join3(full_path, MAX_PATH, base_path, current_path, find_data.cFileName)) continue;
+                if (!safe_path_combine(relative_path, MAX_PATH, current_path, find_data.cFileName)) continue;
+            }
 
             if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
                 walk_directory(base_path, relative_path, f_archive, head);
@@ -247,6 +319,8 @@ void walk_directory(const char* base_path, const char* current_path, FILE* f_arc
 }
 
 int main(int argc, char* argv[]) {
+    (void)argc;
+    (void)argv;
     if (argc != 4) {
         printf("Usage: packer.exe <directory_to_pack> <main_executable> <output_exe>\n");
         return 1;

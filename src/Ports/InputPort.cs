@@ -5,9 +5,9 @@ using System.Linq;
     // Input Port (Connection Points)
     public class InputPort
     {
-        public string Name { get; set; }
-        public Node ParentNode { get; set; }
-        public List<OutputPort> ConnectedSources { get; set; } = new List<OutputPort>();
+        public string Name { get; set; } = string.Empty;
+        public Node? ParentNode { get; set; }
+        public List<OutputPort> ConnectedSources { get; set; } = new();
 
         public float GetValue()
         {

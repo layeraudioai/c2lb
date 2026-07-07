@@ -15,8 +15,16 @@ namespace ToyConEngine
 
         public override void Evaluate(GameTime gameTime)
         {
-            if (Inputs[0].GetValue() > 0) ElapsedTime = 0;
-            ElapsedTime += (float)gameTime.ElapsedGameTime.TotalSeconds;
+            bool shouldReset = Inputs[0].GetValue() > 0;
+            if (shouldReset)
+            {
+                ElapsedTime = 0f;
+            }
+            else
+            {
+                ElapsedTime += Math.Max(0f, (float)gameTime.ElapsedGameTime.TotalSeconds);
+            }
+
             Outputs[0].SetValue(ElapsedTime);
         }
     }

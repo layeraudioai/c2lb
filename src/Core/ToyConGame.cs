@@ -2,29 +2,23 @@ using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Audio;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
-using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
-using System.Linq;
-using System.Runtime.InteropServices;
 using System.Text;
-using System.Text.RegularExpressions;
-using System.Threading;
 
 namespace ToyConEngine
 {
     // --- MONOGAME IMPLEMENTATION ---
-    public class ToyConGame : Game
+    public partial class ToyConGame : Game
     {
 
         private Random rnd = new Random();
         public static Rectangle ClientBounds { get; private set; }
-        private GraphicsDeviceManager _graphics;
-        private SpriteBatch _spriteBatch;
-        private Texture2D _pixel; // Used for drawing lines and rectangles
-        private SpriteFont _font;
+        private GraphicsDeviceManager _graphics = null!;
+        private SpriteBatch _spriteBatch = null!;
+        private Texture2D _pixel = null!; // Used for drawing lines and rectangles
+        private SpriteFont? _font;
         private List<string> _availableSounds = new List<string>();
+        private readonly Dictionary<string, SoundEffect> _soundCache = new(StringComparer.OrdinalIgnoreCase);
 
         // Selection & Clipboard
         private List<Node> _selectedNodes = new List<Node>();
@@ -37,7 +31,7 @@ namespace ToyConEngine
         private class ConnectionData { public int TargetNodeIdx; public int TargetInputIdx; public int SourceNodeIdx; public int SourceOutputIdx; }
         private List<ConnectionData> _clipboardConnections = new List<ConnectionData>();
 
-        private GraphEngine _engine;
+        private GraphEngine _engine = null!;
 
         // Visual State
         private Dictionary<Node, Rectangle> _nodeRects = new Dictionary<Node, Rectangle>();
@@ -48,21 +42,22 @@ namespace ToyConEngine
         private KeyboardState _prevKeyboardState;
         private MouseState _prevMouseState;
 
-        private string _activeMenu = null;
-        private Dictionary<string, List<(string Name, Func<Node> Factory)>> _menus;
+        private string? _activeMenu;
+        private Dictionary<string, List<(string Name, string Description, Func<Node?> Factory)>>? _menus;
         private Rectangle _uiBarRect = new Rectangle(0, 0, 800, 30);
+        private const int UiBarHeight = 30;
 
-        private Node _inspectedNode = null;
+        private Node? _inspectedNode;
         private Rectangle _overlayRect;
         private double _lastClickTime;
-        private double _lastRightClickTime;
         private const double DoubleClickTime = 0.3;
 
-        private Node _connectionStartNode = null;
+        private Node? _connectionStartNode;
         private int _connectionStartIndex = -1;
         private string _inputValueBuffer = "";
         private bool _benchmarkMode = false;
         private string _benchmarkResult = "";
+        private bool _showBenchmarkPopup = false;
         
         private const string StandaloneMagic = "TOYCON_PKG";
 
@@ -90,6 +85,7 @@ namespace ToyConEngine
             _graphics.SynchronizeWithVerticalRetrace = false;
             _benchmarkMode = !_benchmarkMode; 
             _benchmarkResult = "Benchmarking...";
+            _showBenchmarkPopup = true;
             optimized = false;
         }
 
@@ -97,51 +93,52 @@ namespace ToyConEngine
         {
             _engine = new GraphEngine();
 
-            _menus = new Dictionary<string, List<(string Name, Func<Node> Factory)>>
+            _menus = new Dictionary<string, List<(string Name, string Description, Func<Node?> Factory)>>
             {
-                { "File", new List<(string, Func<Node>)> {
-                    ("Save", () => { 
-                        var path = PromptForSavePath("design.toy", "Nintendo Labo ToyCon Garage Design File|*.toy");
-                        SaveLayout(path);
-                        return null; }),
-                    ("Load", () => { 
-                        var path = PromptForOpenPath("design.toy", "Nintendo Labo ToyCon Garage Design File|*.toy");
-                        LoadLayout(path);
-                        return null; }),
-                    ("Benchmark", () => { 
+                { "File", new List<(string Name, string Description, Func<Node?> Factory)> {
+                    ("Save", "Saves the current graph layout to a chosen file.", () => { 
+                        var path = PromptForSavePath("design.toy", "ToyCon Layout|*.toy|All Files|*.*");
+                        if (path != null) SaveLayout(path);
+                        return null; 
+                    }),
+                    ("Load", "Loads a graph layout from a chosen file.", () => { 
+                        var path = PromptForOpenPath("ToyCon Layout|*.toy|All Files|*.*");
+                        if (path != null) LoadLayout(path);
+                        return null; 
+                    }),
+                    ("Benchmark", "Runs a performance benchmark to measure graph throughput.", () => { 
                         setupBench();
                         return null; 
                     }),
-                    ("Export EXE", () => { 
+                    ("Export EXE", "Packages the current project into a standalone executable.", () => { 
                         var path = PromptForSavePath("ToyCon_Export.exe", "Executable|*.exe");
-                        if (path != null) ExportStandalone(path); 
+                        if (path != null) ExportStandalone(path);
                         return null; 
                     }),
-                    ("Clear", () => { _engine.Nodes.Clear(); _nodeRects.Clear(); _selectedNodes.Clear(); _inspectedNode = null; return null; })
+                    ("Clear", "Removes every node from the current graph.", () => { _engine.Nodes.Clear(); _nodeRects.Clear(); _selectedNodes.Clear(); _inspectedNode = null; return null; })
                 }},
-                { "Input", new List<(string, Func<Node>)> {
-                    ("Constant", () => new ConstantNode(1.0f)),
-                    ("Button", () => new ButtonNode()),
-                    ("Key", () => new KeyNode()),
-                    ("Timer", () => new TimerNode()),
-                    ("Cursor", () => new CursorNode()),
-                    ("Random", () => new RandomNode()),
-                    ("Toy Input", () => new ToyInputNode())
+                { "Input", new List<(string Name, string Description, Func<Node?> Factory)> {
+                    ("Constant", "Emits a fixed numeric value for use in calculations.", () => new ConstantNode(1.0f)),
+                    ("Button", "Outputs a signal while the button area is pressed.", () => new ButtonNode()),
+                    ("Key", "Exposes the state of a keyboard key as a signal.", () => new KeyNode()),
+                    ("Timer", "Counts elapsed time and can reset when the reset input becomes active.", () => new TimerNode()),
+                    ("Cursor", "Outputs the current mouse X and Y coordinates.", () => new CursorNode()),
+                    ("Random", "Generates a random value each evaluation.", () => new RandomNode())
                 }},
-                { "Middle", new List<(string, Func<Node>)> {
-                    ("Math", () => new MathNode(MathNode.Operation.Add)),
-                    ("Logic", () => new LogicNode(LogicNode.LogicType.And)),
-                    ("Counter", () => new CounterNode())
+                { "Middle", new List<(string Name, string Description, Func<Node?> Factory)> {
+                    ("Math", "Performs arithmetic operations on one or more values.", () => new MathNode(MathNode.Operation.Add)),
+                    ("Logic", "Combines boolean signals with logic operators.", () => new LogicNode(LogicNode.LogicType.And)),
+                    ("Counter", "Tracks a value and increments or decrements it over time.", () => new CounterNode())
                 }},
-                { "Output", new List<(string, Func<Node>)> {
-                    ("Color", () => new ColorOutputNode()),
-                    ("Beep", () => new BeepOutputNode()),
-                    ("Screen", () => new ScreenNode()),
-                    ("Toy Output", () => new ToyOutputNode())
+                { "Output", new List<(string Name, string Description, Func<Node?> Factory)> {
+                    ("Color", "Uses input values to drive a color output.", () => new ColorOutputNode()),
+                    ("Beep", "Plays a sound effect based on the configured settings.", () => new BeepOutputNode()),
+                    ("Screen", "Draws to the game screen output.", () => new ScreenNode())
                 }},
-                { "Import", new List<(string, Func<Node>)> {
-                    ("Script", () => new ScriptImporterNode()),
-                    ("Toy Project", () => new ToyNode())
+                { "Import", new List<(string Name, string Description, Func<Node?> Factory)> {
+                    ("Script", "Imports a script graph definition from a text source.", () => new ScriptImporterNode()),
+                    ("Toy", "Imports a ToyCon layout or script from a text source.", () => new ScriptImporterNode()),
+                    ("MIDI", "Imports a MIDI file into a graph of timers, counters, logic gates, and beeps.", () => new MidiImporterNode())
                 }}
             };
 
@@ -171,21 +168,43 @@ namespace ToyConEngine
 
             // Scan for sounds
             var contentDir = new DirectoryInfo(Content.RootDirectory);
-            if (contentDir.Exists)
-            {
-                foreach (var file in contentDir.GetFiles("*.xnb"))
-                {
-                    string assetName = Path.GetFileNameWithoutExtension(file.Name);
-                    try
-                    {
-                        // Try to load as SoundEffect to verify type
-                        Content.Load<SoundEffect>(assetName);
+            if (contentDir.Exists) {
+                foreach(var file in contentDir.GetFiles("*.xnb", SearchOption.AllDirectories)) {
+                    // Get relative path from Content.RootDirectory
+                    string relativePath = Path.GetRelativePath(Content.RootDirectory, file.FullName);
+
+                    // Remove the .xnb extension for Content.Load
+                    string assetName = Path.ChangeExtension(relativePath, null).Replace('\\', '/'); // Ensure forward slashes for MonoGame
+
+                    try {
+                        var sound = LoadSoundEffect(assetName);
+                        if (sound != null) {
                         _availableSounds.Add(assetName);
+                        }
+                    } catch (Exception ex) {
+                        // Log and skip invalid assets
+                        Console.WriteLine($"Failed to load sound '{assetName}': {ex.Message}");
                     }
-                    catch { }
                 }
-            }
+            }    
             if (_availableSounds.Count == 0) _availableSounds.Add("Beep");
+        }
+
+        private SoundEffect? LoadSoundEffect(string assetName)
+        {
+            if (string.IsNullOrWhiteSpace(assetName)) return null;
+            if (_soundCache.TryGetValue(assetName, out var cached)) return cached;
+
+            try
+            {
+                var effect = Content.Load<SoundEffect>(assetName);
+                _soundCache[assetName] = effect;
+                return effect;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private void benchBiotch(GameTime gameTime) {
@@ -214,10 +233,10 @@ namespace ToyConEngine
             }
             else
             {
-                _engine.Tick(new GameTime(new TimeSpan(), new TimeSpan((long)nsPerTick)));
+                _engine.Tick(gameTime);
                 _tpsCount++;
             }
-            if (tps > 1152000) { optimized=true; _engine.Tick(gameTime); } else { optimized = false;  _engine.Tick(new GameTime(new TimeSpan(), new TimeSpan((long)nsPerTick))); }
+            if (tps > 1152000) { optimized=true; }
         }
 
         protected override void Update(GameTime gameTime)
@@ -262,12 +281,11 @@ namespace ToyConEngine
             {
                 if (node is BeepOutputNode beepNode && beepNode.ShouldPlay)
                 {
-                    try
+                    var sfx = LoadSoundEffect(beepNode.SoundName);
+                    if (sfx != null)
                     {
-                        var sfx = Content.Load<SoundEffect>(beepNode.SoundName);
                         sfx.Play(beepNode.Volume, beepNode.Pitch, 0);
                     }
-                    catch { }
                 }
             }
 
@@ -333,7 +351,7 @@ namespace ToyConEngine
                             Rectangle portRect = new Rectangle((int)portPos.X - 6, (int)portPos.Y - 6, 12, 12);
                             if (portRect.Contains(mousePos))
                             {
-                                _engine.Connect(_connectionStartNode, _connectionStartIndex, node, i);
+                                TryConnect(_connectionStartNode, _connectionStartIndex, node, i);
                                 break;
                             }
                         }
@@ -391,6 +409,7 @@ namespace ToyConEngine
                                 {
                                     var source = input.ConnectedSources[j];
                                     var startNode = source.ParentNode;
+                                    if (startNode is null) continue;
                                     int outputIndex = startNode.Outputs.IndexOf(source);
                                     Vector2 startPos = GetOutputPosition(startNode, outputIndex);
                                     Vector2 endPos = GetInputPosition(node, i);
@@ -419,7 +438,7 @@ namespace ToyConEngine
                 if (mouseState.LeftButton == ButtonState.Pressed && _prevMouseState.LeftButton == ButtonState.Released)
                 {
                     // Clicked
-                    Node clickedNode = null;
+                    Node? clickedNode = null;
                     foreach (var kvp in _nodeRects)
                     {
                         if (kvp.Value.Contains(mousePos))
@@ -460,6 +479,7 @@ namespace ToyConEngine
                         {
                             var r = _nodeRects[node];
                             r.Location += delta;
+                            ClampNodeRect(ref r);
                             _nodeRects[node] = r;
                         }
                     }
@@ -568,6 +588,7 @@ namespace ToyConEngine
                     {
                         var startNode = source.ParentNode;
                         var endNode = node;
+                        if (startNode is null) continue;
 
                         int outputIndex = startNode.Outputs.IndexOf(source);
                         Vector2 startPos = GetOutputPosition(startNode, outputIndex);
@@ -612,50 +633,6 @@ namespace ToyConEngine
                     _screenTextures[screenNode].SetData(screenNode.Buffer);
                     // We'll draw the texture after the rect
                 }
-                if (node is ToyNode toyNode)
-                {
-                    var internalScreen = toyNode.GetScreenNode();
-                    if (internalScreen != null)
-                    {
-                        if (!_screenTextures.ContainsKey(internalScreen)) _screenTextures[internalScreen] = new Texture2D(GraphicsDevice, ScreenNode.Width, ScreenNode.Height);
-                        _screenTextures[internalScreen].SetData(internalScreen.Buffer);
-                        // We'll draw the texture after the rect
-                    }
-
-                    // Draw internal graph design
-                    if (toyNode.InternalRects.Count > 0)
-                    {
-                        int minX = int.MaxValue, minY = int.MaxValue, maxX = int.MinValue, maxY = int.MinValue;
-                        foreach(var r in toyNode.InternalRects.Values)
-                        {
-                            if (r.X < minX) minX = r.X;
-                            if (r.Y < minY) minY = r.Y;
-                            if (r.Right > maxX) maxX = r.Right;
-                            if (r.Bottom > maxY) maxY = r.Bottom;
-                        }
-                        
-                        if (maxX > minX && maxY > minY)
-                        {
-                            float graphW = maxX - minX + 100; // padding
-                            float graphH = maxY - minY + 100;
-                            float scale = Math.Min(rect.Width / graphW, rect.Height / graphH);
-                            Vector2 offset = new Vector2(rect.X + rect.Width/2 - (minX + graphW/2 - 50)*scale, rect.Y + rect.Height/2 - (minY + graphH/2 - 50)*scale);
-
-                            foreach(var n in toyNode.InternalEngine.Nodes)
-                            {
-                                if (toyNode.InternalRects.TryGetValue(n, out Rectangle nr))
-                                {
-                                    Rectangle drawRect = new Rectangle(
-                                        (int)(nr.X * scale + offset.X), 
-                                        (int)(nr.Y * scale + offset.Y), 
-                                        (int)(nr.Width * scale), 
-                                        (int)(nr.Height * scale));
-                                    _spriteBatch.Draw(_pixel, drawRect, new Color(100, 100, 100, 100));
-                                }
-                            }
-                        }
-                    }
-                }
 
                 if (_selectedNodes.Contains(node))
                     color = Color.Lerp(color, Color.White, 0.3f);
@@ -669,11 +646,6 @@ namespace ToyConEngine
                 {
                     // Draw screen content inside node
                     _spriteBatch.Draw(_screenTextures[sn], new Rectangle(rect.Center.X - 32, rect.Center.Y - 20, 64, 64), Color.White);
-                }
-                if (node is ToyNode tn && tn.GetScreenNode() is ScreenNode tsn && _screenTextures.ContainsKey(tsn))
-                {
-                    // Draw internal screen content inside node
-                    _spriteBatch.Draw(_screenTextures[tsn], new Rectangle(rect.Center.X - 32, rect.Center.Y - 20, 64, 64), Color.White);
                 }
 
                 // Draw Input Ports
@@ -724,14 +696,24 @@ namespace ToyConEngine
                 DrawTpsGraph(_spriteBatch, new Rectangle(ClientBounds.Width - 110, 30, 100, 30));
             }
 
-            if (!string.IsNullOrEmpty(_benchmarkResult))
+            if (_showBenchmarkPopup && !string.IsNullOrEmpty(_benchmarkResult))
             {
                 Vector2 sz = _font?.MeasureString(_benchmarkResult) ?? Vector2.Zero;
                 Vector2 pos = new Vector2((ClientBounds.Width - sz.X) / 2, 50);
-                
-                _spriteBatch.Draw(_pixel, new Rectangle((int)pos.X - 10, (int)pos.Y - 10, (int)sz.X + 20, (int)sz.Y + 20), new Color(0, 0, 0, 200));
-                DrawHollowRect(_spriteBatch, new Rectangle((int)pos.X - 10, (int)pos.Y - 10, (int)sz.X + 20, (int)sz.Y + 20), Color.White);
-                if (_font != null) _spriteBatch.DrawString(_font, _benchmarkResult, pos, Color.White);
+                Rectangle popupRect = new Rectangle((int)pos.X - 10, (int)pos.Y - 10, (int)sz.X + 20, (int)sz.Y + 20);
+                // Background
+                _spriteBatch.Draw(_pixel, popupRect, new Color(0, 0, 0, 200));
+                DrawHollowRect(_spriteBatch, popupRect, Color.White);
+                // Close button (X)
+                Rectangle closeRect = new Rectangle(popupRect.Right - 20, popupRect.Top, 20, 20);
+                _spriteBatch.Draw(_pixel, closeRect, Color.DarkRed);
+                if (_font != null)
+                {
+                    // Draw "X" inside close button
+                    _spriteBatch.DrawString(_font, "X", new Vector2(closeRect.X + 4, closeRect.Y + 2), Color.White);
+                    // Draw benchmark result text
+                    _spriteBatch.DrawString(_font, _benchmarkResult, pos, Color.White);
+                }
             }
 
             DrawOverlay();
@@ -741,345 +723,13 @@ namespace ToyConEngine
             base.Draw(gameTime);
         }
 
-        private bool IsKeyPressed(KeyboardState current, Keys key)
-        {
-            return current.IsKeyDown(key) && !_prevKeyboardState.IsKeyDown(key);
-        }
-
-        private bool UpdateUI(MouseState mouseState)
-        {
-            _uiBarRect.Width = Window.ClientBounds.Width;
-            bool clicked = mouseState.LeftButton == ButtonState.Pressed && _prevMouseState.LeftButton == ButtonState.Released;
-            Point mousePos = mouseState.Position;
-            bool captured = false;
-
-            if (_uiBarRect.Contains(mousePos)) captured = true;
-
-            if (clicked)
-            {
-                int x = 10;
-                bool menuClicked = false;
-                foreach (var category in _menus.Keys)
-                {
-                    Rectangle btnRect = new Rectangle(x, 0, 80, 30);
-                    if (btnRect.Contains(mousePos))
-                    {
-                        _activeMenu = (_activeMenu == category) ? null : category;
-                        menuClicked = true;
-                        captured = true;
-                        break;
-                    }
-                    x += 90;
-                }
-
-                if (!menuClicked && _activeMenu != null)
-                {
-                    int menuX = 10;
-                    foreach (var category in _menus.Keys) { if (category == _activeMenu) break; menuX += 90; }
-
-                    var items = _menus[_activeMenu];
-                    int y = 30;
-                    for (int i = 0; i < items.Count; i++)
-                    {
-                        Rectangle itemRect = new Rectangle(menuX, y, 120, 30);
-                        if (itemRect.Contains(mousePos))
-                        {
-                            var n = items[i].Factory();
-                            if (n != null) SpawnNode(n);
-                            _activeMenu = null;
-                            captured = true;
-                            menuClicked = true;
-                            break;
-                        }
-                        y += 30;
-                    }
-                    if (!menuClicked && !_uiBarRect.Contains(mousePos)) _activeMenu = null;
-                }
-                else if (!menuClicked && _activeMenu != null && !_uiBarRect.Contains(mousePos)) _activeMenu = null;
-            }
-            return captured;
-        }
-
-        private void DrawUI()
-        {
-            _spriteBatch.Draw(_pixel, _uiBarRect, new Color(40, 40, 40));
-            DrawHollowRect(_spriteBatch, _uiBarRect, Color.Gray);
-
-            int x = 10;
-            foreach (var category in _menus.Keys)
-            {
-                Rectangle btnRect = new Rectangle(x, 0, 80, 30);
-                _spriteBatch.Draw(_pixel, btnRect, (_activeMenu == category) ? Color.Gray : Color.DarkGray);
-                DrawHollowRect(_spriteBatch, btnRect, Color.White);
-                if (_font != null) _spriteBatch.DrawString(_font, category, new Vector2(x + 10, 5), Color.White);
-
-                if (_activeMenu == category)
-                {
-                    var items = _menus[category];
-                    int y = 30;
-                    for (int i = 0; i < items.Count; i++)
-                    {
-                        Rectangle itemRect = new Rectangle(x, y, 120, 30);
-                        _spriteBatch.Draw(_pixel, itemRect, new Color(50, 50, 50));
-                        DrawHollowRect(_spriteBatch, itemRect, Color.LightGray);
-                        if (_font != null) _spriteBatch.DrawString(_font, items[i].Name, new Vector2(x + 5, y + 5), Color.White);
-                        y += 30;
-                    }
-                }
-                x += 90;
-            }
-        }
-
-        private void HandleScriptInput(KeyboardState current, ref string buffer)
-        {
-            bool ctrl = current.IsKeyDown(Keys.LeftControl) || current.IsKeyDown(Keys.RightControl);
-
-            foreach (Keys key in current.GetPressedKeys())
-            {
-                if (!_prevKeyboardState.IsKeyDown(key))
-                {
-                    if (key == Keys.Back && buffer.Length > 0)
-                        buffer = buffer.Substring(0, buffer.Length - 1);
-                    else if (key == Keys.Enter)
-                        buffer += "\n";
-                    else if (key == Keys.Space)
-                        buffer += " ";
-                    else if (ctrl && key == Keys.V)
-                    {
-                        buffer += GetClipboard();
-                    }
-                    else if (!ctrl)
-                    {
-                        char? c = ScriptKeyToChar(key, current.IsKeyDown(Keys.LeftShift) || current.IsKeyDown(Keys.RightShift));
-                        if (c.HasValue) buffer += c.Value;
-                    }
-                }
-            }
-        }
-
-        private void ParseAndGenerateGraph(string script)
-        {
-            _engine.Nodes.Clear();
-            _nodeRects.Clear();
-            _connectionStartNode = null;
-
-            // Tokenize
-            string pattern = @"([(){},;=+\-*/><&|^!]+|\s+|[A-Za-z_][A-Za-z0-9_]*|[0-9.]+)";
-            var tokens = Regex.Split(script, pattern)
-                              .Where(t => !string.IsNullOrWhiteSpace(t))
-                              .ToList();
-
-            var variables = new Dictionary<string, Node>();
-            int currentY = 100;
-            int currentX = 100;
-            int tokenIndex = 0;
-
-            void Spawn(Node n)
-            {
-                SpawnNodeAt(n, currentX, currentY);
-                currentY += 80;
-                if (currentY > 400) { currentY = 100; currentX += 200; }
-            }
-
-            try
-            {
-                ParseBlock(tokens, ref tokenIndex, variables, null, Spawn);
-            }
-            catch { }
-        }
-
-        private void ParseBlock(List<string> tokens, ref int index, Dictionary<string, Node> variables, Node conditionNode, Action<Node> spawner)
-        {
-            while (index < tokens.Count)
-            {
-                string t = tokens[index];
-
-                if (t == "}")
-                {
-                    index++;
-                    return;
-                }
-                else if (t == "var" || t == "int" || t == "float")
-                {
-                    index++;
-                    string name = tokens[index++];
-                    if (tokens[index] == "=")
-                    {
-                        index++;
-                        Node valNode = ParseExpression(tokens, ref index, variables, spawner);
-                        variables[name] = valNode;
-                    }
-                    if (index < tokens.Count && tokens[index] == ";") index++;
-                }
-                else if (t == "if")
-                {
-                    index++;
-                    if (tokens[index] == "(") index++;
-                    Node cond = ParseExpression(tokens, ref index, variables, spawner);
-                    if (tokens[index] == ")") index++;
-
-                    Node effectiveCond = cond;
-                    if (conditionNode != null)
-                    {
-                        var andNode = new LogicNode(LogicNode.LogicType.And);
-                        spawner(andNode);
-                        _engine.Connect(conditionNode, 0, andNode, 0);
-                        _engine.Connect(cond, 0, andNode, 1);
-                        effectiveCond = andNode;
-                    }
-
-                    if (tokens[index] == "{")
-                    {
-                        index++;
-                        ParseBlock(tokens, ref index, variables, effectiveCond, spawner);
-                    }
-                }
-                else if (t == "new")
-                {
-                    index++;
-                    string typeName = tokens[index++];
-                    if (tokens[index] == "(") index++;
-                    var args = ParseArguments(tokens, ref index, variables, spawner);
-                    if (index < tokens.Count && tokens[index] == ";") index++;
-                    CreateNode(typeName, args, conditionNode, spawner);
-                }
-                else if (IsIdentifier(t) && index + 1 < tokens.Count && tokens[index + 1] == "(")
-                {
-                    string funcName = tokens[index++];
-                    index++;
-                    var args = ParseArguments(tokens, ref index, variables, spawner);
-                    if (index < tokens.Count && tokens[index] == ";") index++;
-                    CreateNode(funcName, args, conditionNode, spawner);
-                }
-                else if (IsIdentifier(t) && index + 1 < tokens.Count && tokens[index + 1] == "=")
-                {
-                    string name = tokens[index++];
-                    index++;
-                    Node valNode = ParseExpression(tokens, ref index, variables, spawner);
-
-                    if (conditionNode != null && variables.ContainsKey(name))
-                    {
-                        var selectNode = new MathNode(MathNode.Operation.Select);
-                        spawner(selectNode);
-                        _engine.Connect(conditionNode, 0, selectNode, 0);
-                        _engine.Connect(valNode, 0, selectNode, 1);
-                        _engine.Connect(variables[name], 0, selectNode, 2);
-                        variables[name] = selectNode;
-                    }
-                    else
-                    {
-                        variables[name] = valNode;
-                    }
-
-                    if (index < tokens.Count && tokens[index] == ";") index++;
-                }
-                else
-                {
-                    index++;
-                }
-            }
-        }
-
-        private bool IsIdentifier(string s) => char.IsLetter(s[0]) || s[0] == '_';
-
-        private List<Node> ParseArguments(List<string> tokens, ref int index, Dictionary<string, Node> variables, Action<Node> spawner)
-        {
-            var args = new List<Node>();
-            while (index < tokens.Count && tokens[index] != ")")
-            {
-                args.Add(ParseExpression(tokens, ref index, variables, spawner));
-                if (tokens[index] == ",") index++;
-            }
-            if (index < tokens.Count) index++;
-            return args;
-        }
-
-        private Node ParseExpression(List<string> tokens, ref int index, Dictionary<string, Node> variables, Action<Node> spawner)
-        {
-            Node left = ParseTerm(tokens, ref index, variables, spawner);
-
-            while (index < tokens.Count)
-            {
-                string op = tokens[index];
-                if (op == "+" || op == "-" || op == "*" || op == "/" || op == ">" || op == "<")
-                {
-                    index++;
-                    Node right = ParseTerm(tokens, ref index, variables, spawner);
-
-                    Node opNode = null;
-                    if (op == "+") opNode = new MathNode(MathNode.Operation.Add);
-                    if (op == "-") opNode = new MathNode(MathNode.Operation.Subtract);
-                    if (op == "*") opNode = new MathNode(MathNode.Operation.Multiply);
-                    if (op == "/") opNode = new MathNode(MathNode.Operation.Divide);
-                    if (op == ">") opNode = new LogicNode(LogicNode.LogicType.GreaterThan);
-                    if (op == "<") opNode = new LogicNode(LogicNode.LogicType.LessThan);
-
-                    spawner(opNode);
-                    _engine.Connect(left, 0, opNode, 0);
-                    _engine.Connect(right, 0, opNode, 1);
-                    left = opNode;
-                }
-                else break;
-            }
-            return left;
-        }
-
-        private Node ParseTerm(List<string> tokens, ref int index, Dictionary<string, Node> variables, Action<Node> spawner)
-        {
-            string t = tokens[index++];
-            if (float.TryParse(t, out float val))
-            {
-                var c = new ConstantNode(val);
-                spawner(c);
-                return c;
-            }
-            if (variables.ContainsKey(t)) return variables[t];
-            if (t == "abs" && tokens[index] == "(")
-            {
-                index++;
-                Node arg = ParseExpression(tokens, ref index, variables, spawner);
-                if (tokens[index] == ")") index++;
-                var absNode = new MathNode(MathNode.Operation.Abs);
-                spawner(absNode);
-                _engine.Connect(arg, 0, absNode, 0);
-                return absNode;
-            }
-            if (t == "(")
-            {
-                Node n = ParseExpression(tokens, ref index, variables, spawner);
-                if (tokens[index] == ")") index++;
-                return n;
-            }
-            return new ConstantNode(0);
-        }
-
-        private void CreateNode(string name, List<Node> args, Node condition, Action<Node> spawner)
-        {
-            Node n = null;
-            if (name == "beep")
-            {
-                var b = new BeepOutputNode();
-                n = b;
-                spawner(n);
-                if (condition != null) _engine.Connect(condition, 0, n, 0);
-                else { var c = new ConstantNode(1); spawner(c); _engine.Connect(c, 0, n, 0); }
-                if (args.Count > 0) _engine.Connect(args[0], 0, n, 1);
-                if (args.Count > 1) _engine.Connect(args[1], 0, n, 2);
-            }
-            else if (name == "ColorNode")
-            {
-                var c = new ColorOutputNode();
-                n = c;
-                spawner(n);
-                if (args.Count > 0) _engine.Connect(args[0], 0, n, 0);
-                if (args.Count > 1) _engine.Connect(args[1], 0, n, 1);
-                if (args.Count > 2) _engine.Connect(args[2], 0, n, 2);
-            }
-        }
-
         private void UpdateOverlay(MouseState mouse, KeyboardState keyboard, bool clicked)
         {
-            _overlayRect = new Rectangle(Window.ClientBounds.Width / 2 - 150, Window.ClientBounds.Height / 2 - 100, 300, 200);
+            int width = Math.Clamp(ClientBounds.Width - 40, 280, 320);
+            int height = Math.Clamp(ClientBounds.Height - 40, 220, 260);
+            int x = Math.Clamp(ClientBounds.Width / 2 - width / 2, 10, Math.Max(10, ClientBounds.Width - width - 10));
+            int y = Math.Clamp(ClientBounds.Height / 2 - height / 2, 35, Math.Max(35, ClientBounds.Height - height - 10));
+            _overlayRect = new Rectangle(x, y, width, height);
 
             Point mousePos = mouse.Position;
 
@@ -1101,13 +751,13 @@ namespace ToyConEngine
             }
 
             // Content
-            int y = _overlayRect.Top + 40;
-            int x = _overlayRect.Left + 20;
+            int contentY = _overlayRect.Top + 40;
+            int contentX = _overlayRect.Left + 20;
 
             if (_inspectedNode is ConstantNode cNode)
             {
-                Rectangle minusRect = new Rectangle(x, y, 30, 30);
-                Rectangle plusRect = new Rectangle(x + 100, y, 30, 30);
+                Rectangle minusRect = new Rectangle(contentX, contentY, 30, 30);
+                Rectangle plusRect = new Rectangle(contentX + 100, contentY, 30, 30);
 
                 if (clicked && minusRect.Contains(mousePos))
                 {
@@ -1125,7 +775,7 @@ namespace ToyConEngine
             }
             else if (_inspectedNode is MathNode mNode)
             {
-                Rectangle btnRect = new Rectangle(x, y, 200, 30);
+                Rectangle btnRect = new Rectangle(contentX, contentY, 200, 30);
                 bool change = false;
                 int dir = 0;
                 if (clicked && btnRect.Contains(mousePos)) { change = true; dir = 1; }
@@ -1143,7 +793,7 @@ namespace ToyConEngine
             }
             else if (_inspectedNode is LogicNode lNode)
             {
-                Rectangle btnRect = new Rectangle(x, y, 200, 30);
+                Rectangle btnRect = new Rectangle(contentX, contentY, 200, 30);
                 bool change = false;
                 int dir = 0;
                 if (clicked && btnRect.Contains(mousePos)) { change = true; dir = 1; }
@@ -1161,10 +811,17 @@ namespace ToyConEngine
             }
             else if (_inspectedNode is KeyNode kNode)
             {
-                Rectangle btnRect = new Rectangle(x, y, 200, 30);
+                Rectangle btnRect = new Rectangle(contentX, contentY, 200, 30);
                 if (clicked && btnRect.Contains(mousePos))
                 {
-                    Keys[] commonKeys = { Keys.Space, Keys.A, Keys.B, Keys.Up, Keys.Down, Keys.Left, Keys.Right, Keys.Enter, Keys.W, Keys.S };
+                    Keys[] commonKeys = {
+                        Keys.Space, Keys.A, Keys.B, Keys.C, Keys.D, Keys.E, Keys.Q, Keys.R, Keys.T,
+                        Keys.W, Keys.Z, Keys.X, Keys.V,
+                        Keys.Up, Keys.Down, Keys.Left, Keys.Right,
+                        Keys.Enter,
+                        Keys.D1, Keys.D2, Keys.D3, Keys.D4, Keys.D5, Keys.D6,
+                        Keys.LeftShift, Keys.RightShift
+                    };
                     int idx = Array.IndexOf(commonKeys, kNode.Key);
                     idx = (idx + 1) % commonKeys.Length;
                     foreach (var n in _selectedNodes.OfType<KeyNode>()) { n.Key = commonKeys[idx]; n.Name = $"Key ({n.Key})"; }
@@ -1182,14 +839,14 @@ namespace ToyConEngine
             }
             else if (_inspectedNode is TimerNode tNode)
             {
-                Rectangle resetRect = new Rectangle(x, y, 100, 30);
+                Rectangle resetRect = new Rectangle(contentX, contentY, 100, 30);
                 if ((clicked && resetRect.Contains(mousePos)) || IsKeyPressed(keyboard, Keys.R))
                     foreach (var n in _selectedNodes.OfType<TimerNode>()) n.ElapsedTime = 0;
             }
             else if (_inspectedNode is CounterNode cntNode)
             {
-                Rectangle minusRect = new Rectangle(x, y, 30, 30);
-                Rectangle plusRect = new Rectangle(x + 100, y, 30, 30);
+                Rectangle minusRect = new Rectangle(contentX, contentY, 30, 30);
+                Rectangle plusRect = new Rectangle(contentX + 100, contentY, 30, 30);
                 if (clicked && minusRect.Contains(mousePos))
                 {
                     foreach (var n in _selectedNodes.OfType<CounterNode>()) n.Value -= 0.1f;
@@ -1206,15 +863,15 @@ namespace ToyConEngine
             }
             else if (_inspectedNode is ButtonNode btnNode)
             {
-                Rectangle toggleRect = new Rectangle(x, y, 200, 30);
+                Rectangle toggleRect = new Rectangle(contentX, contentY, 200, 30);
                 if ((clicked && toggleRect.Contains(mousePos)) || IsKeyPressed(keyboard, Keys.Space))
                     foreach (var n in _selectedNodes.OfType<ButtonNode>()) n.IsToggle = !n.IsToggle;
             }
             else if (_inspectedNode is BeepOutputNode beepNode)
             {
-                int btnY = y + 30;
-                Rectangle prevRect = new Rectangle(x, btnY, 30, 30);
-                Rectangle nextRect = new Rectangle(x + 200, btnY, 30, 30);
+                int btnY = contentY + 30;
+                Rectangle prevRect = new Rectangle(contentX, btnY, 30, 30);
+                Rectangle nextRect = new Rectangle(contentX + 200, btnY, 30, 30);
 
                 if (clicked)
                 {
@@ -1232,45 +889,36 @@ namespace ToyConEngine
                 HandleScriptInput(keyboard, ref _inputValueBuffer);
                 foreach (var n in _selectedNodes.OfType<ScriptImporterNode>()) n.Script = _inputValueBuffer;
 
-                Rectangle btnRect = new Rectangle(x, y + 150, 100, 30);
+                Rectangle btnRect = new Rectangle(contentX, contentY + 150, 100, 30);
                 if (clicked && btnRect.Contains(mousePos))
                 {
                     ParseAndGenerateGraph(scriptNode.Script); // Only compiles the inspected one for now as it replaces the whole graph
                     _inspectedNode = null;
                 }
             }
-            else if (_inspectedNode is ToyNode toyNode)
+            else if (_inspectedNode is MidiImporterNode midiNode)
             {
-                Rectangle btnRect = new Rectangle(x, y + 30, 120, 30);
-                if (clicked && btnRect.Contains(mousePos))
+                Rectangle openRect = new Rectangle(contentX, contentY + 70, 110, 30);
+                Rectangle importRect = new Rectangle(contentX + 130, contentY + 70, 110, 30);
+
+                Console.WriteLine("MIDI path: {0}, message: {1}", midiNode.MidiPath, midiNode.LastImportMessage);
+
+                if (clicked && openRect.Contains(mousePos))
                 {
-                    string path = PromptForOpenPath("Nintendo Labo ToyCon Garage Design File|*.toy");
-                    if (!string.IsNullOrEmpty(path))
+                    var path = PromptForOpenPath("MIDI Files|*.mid;*.midi|All Files|*.*");
+                    if (!string.IsNullOrWhiteSpace(path))
                     {
-                        toyNode.FilePath = path;
-                        LoadToyNode(toyNode);
+                        midiNode.MidiPath = path;
+                        midiNode.LastImportMessage = $"Selected: {Path.GetFileName(path)}";
+                        _inputValueBuffer = path;
                     }
                 }
-            }
-            else if (_inspectedNode is ToyInputNode tin)
-            {
-                Rectangle minusRect = new Rectangle(x, y, 30, 30);
-                Rectangle plusRect = new Rectangle(x + 100, y, 30, 30);
-                if (clicked && minusRect.Contains(mousePos)) { tin.Index = Math.Max(0, tin.Index - 1); _inputValueBuffer = tin.Index.ToString(); }
-                if (clicked && plusRect.Contains(mousePos)) { tin.Index = Math.Min(9, tin.Index + 1); _inputValueBuffer = tin.Index.ToString(); }
-                
-                HandleTextInput(keyboard, ref _inputValueBuffer);
-                if (int.TryParse(_inputValueBuffer, out int val)) tin.Index = Math.Clamp(val, 0, 9);
-            }
-            else if (_inspectedNode is ToyOutputNode ton)
-            {
-                Rectangle minusRect = new Rectangle(x, y, 30, 30);
-                Rectangle plusRect = new Rectangle(x + 100, y, 30, 30);
-                if (clicked && minusRect.Contains(mousePos)) { ton.Index = Math.Max(0, ton.Index - 1); _inputValueBuffer = ton.Index.ToString(); }
-                if (clicked && plusRect.Contains(mousePos)) { ton.Index = Math.Min(9, ton.Index + 1); _inputValueBuffer = ton.Index.ToString(); }
-                
-                HandleTextInput(keyboard, ref _inputValueBuffer);
-                if (int.TryParse(_inputValueBuffer, out int val)) ton.Index = Math.Clamp(val, 0, 9);
+
+                if (clicked && importRect.Contains(mousePos))
+                {
+                    ParseAndGenerateMidiGraph(midiNode.MidiPath, midiNode);
+                    _inspectedNode = null;
+                }
             }
         }
 
@@ -1286,502 +934,115 @@ namespace ToyConEngine
             Rectangle closeRect = new Rectangle(_overlayRect.Right - 25, _overlayRect.Top + 5, 20, 20);
             _spriteBatch.Draw(_pixel, closeRect, Color.Red);
 
-            int y = _overlayRect.Top + 40;
-            int x = _overlayRect.Left + 20;
+            int overlayY = _overlayRect.Top + 40;
+            int overlayX = _overlayRect.Left + 20;
 
             if (_inspectedNode is ConstantNode cNode)
             {
-                _spriteBatch.Draw(_pixel, new Rectangle(x, y, 30, 30), Color.Gray);
-                _spriteBatch.Draw(_pixel, new Rectangle(x + 100, y, 30, 30), Color.Gray);
+                _spriteBatch.Draw(_pixel, new Rectangle(overlayX, overlayY, 30, 30), Color.Gray);
+                _spriteBatch.Draw(_pixel, new Rectangle(overlayX + 100, overlayY, 30, 30), Color.Gray);
                 if (_font != null)
                 {
-                    _spriteBatch.DrawString(_font, "-", new Vector2(x + 10, y + 5), Color.White);
-                    _spriteBatch.DrawString(_font, _inputValueBuffer, new Vector2(x + 40, y + 5), Color.White);
-                    _spriteBatch.DrawString(_font, "+", new Vector2(x + 110, y + 5), Color.White);
+                    _spriteBatch.DrawString(_font, "-", new Vector2(overlayX + 10, overlayY + 5), Color.White);
+                    _spriteBatch.DrawString(_font, _inputValueBuffer, new Vector2(overlayX + 40, overlayY + 5), Color.White);
+                    _spriteBatch.DrawString(_font, "+", new Vector2(overlayX + 110, overlayY + 5), Color.White);
                 }
             }
             else if (_inspectedNode is MathNode mNode)
             {
-                _spriteBatch.Draw(_pixel, new Rectangle(x, y, 200, 30), Color.Gray);
-                if (_font != null) _spriteBatch.DrawString(_font, "Op: " + mNode.Op.ToString(), new Vector2(x + 10, y + 5), Color.White);
+                _spriteBatch.Draw(_pixel, new Rectangle(overlayX, overlayY, 200, 30), Color.Gray);
+                if (_font != null) _spriteBatch.DrawString(_font, "Op: " + mNode.Op.ToString(), new Vector2(overlayX + 10, overlayY + 5), Color.White);
             }
             else if (_inspectedNode is LogicNode lNode)
             {
-                _spriteBatch.Draw(_pixel, new Rectangle(x, y, 200, 30), Color.Gray);
-                if (_font != null) _spriteBatch.DrawString(_font, "Type: " + lNode.Type.ToString(), new Vector2(x + 10, y + 5), Color.White);
+                _spriteBatch.Draw(_pixel, new Rectangle(overlayX, overlayY, 200, 30), Color.Gray);
+                if (_font != null) _spriteBatch.DrawString(_font, "Type: " + lNode.Type.ToString(), new Vector2(overlayX + 10, overlayY + 5), Color.White);
             }
             else if (_inspectedNode is KeyNode kNode)
             {
-                _spriteBatch.Draw(_pixel, new Rectangle(x, y, 200, 30), Color.Gray);
-                if (_font != null) _spriteBatch.DrawString(_font, "Key: " + kNode.Key.ToString(), new Vector2(x + 10, y + 5), Color.White);
+                _spriteBatch.Draw(_pixel, new Rectangle(overlayX, overlayY, 200, 30), Color.Gray);
+                if (_font != null) _spriteBatch.DrawString(_font, "Key: " + kNode.Key.ToString(), new Vector2(overlayX + 10, overlayY + 5), Color.White);
             }
             else if (_inspectedNode is TimerNode tNode)
             {
-                _spriteBatch.Draw(_pixel, new Rectangle(x, y, 100, 30), Color.Gray);
-                if (_font != null) _spriteBatch.DrawString(_font, "Reset", new Vector2(x + 10, y + 5), Color.White);
-                if (_font != null) _spriteBatch.DrawString(_font, tNode.ElapsedTime.ToString("0.00") + "s", new Vector2(x + 110, y + 5), Color.White);
+                _spriteBatch.Draw(_pixel, new Rectangle(overlayX, overlayY, 100, 30), Color.Gray);
+                if (_font != null) _spriteBatch.DrawString(_font, "Reset", new Vector2(overlayX + 10, overlayY + 5), Color.White);
+                if (_font != null) _spriteBatch.DrawString(_font, tNode.ElapsedTime.ToString("0.00") + "s", new Vector2(overlayX + 110, overlayY + 5), Color.White);
             }
             else if (_inspectedNode is CounterNode cntNode)
             {
-                _spriteBatch.Draw(_pixel, new Rectangle(x, y, 30, 30), Color.Gray);
-                _spriteBatch.Draw(_pixel, new Rectangle(x + 100, y, 30, 30), Color.Gray);
+                _spriteBatch.Draw(_pixel, new Rectangle(overlayX, overlayY, 30, 30), Color.Gray);
+                _spriteBatch.Draw(_pixel, new Rectangle(overlayX + 100, overlayY, 30, 30), Color.Gray);
                 if (_font != null)
                 {
-                    _spriteBatch.DrawString(_font, "-", new Vector2(x + 10, y + 5), Color.White);
-                    _spriteBatch.DrawString(_font, _inputValueBuffer, new Vector2(x + 40, y + 5), Color.White);
-                    _spriteBatch.DrawString(_font, "+", new Vector2(x + 110, y + 5), Color.White);
+                    _spriteBatch.DrawString(_font, "-", new Vector2(overlayX + 10, overlayY + 5), Color.White);
+                    _spriteBatch.DrawString(_font, _inputValueBuffer, new Vector2(overlayX + 40, overlayY + 5), Color.White);
+                    _spriteBatch.DrawString(_font, "+", new Vector2(overlayX + 110, overlayY + 5), Color.White);
                 }
             }
             else if (_inspectedNode is ButtonNode btnNode)
             {
-                _spriteBatch.Draw(_pixel, new Rectangle(x, y, 200, 30), btnNode.IsToggle ? Color.Green : Color.Gray);
-                if (_font != null) _spriteBatch.DrawString(_font, "Toggle Mode: " + (btnNode.IsToggle ? "ON" : "OFF"), new Vector2(x + 10, y + 5), Color.White);
+                _spriteBatch.Draw(_pixel, new Rectangle(overlayX, overlayY, 200, 30), btnNode.IsToggle ? Color.Green : Color.Gray);
+                if (_font != null) _spriteBatch.DrawString(_font, "Toggle Mode: " + (btnNode.IsToggle ? "ON" : "OFF"), new Vector2(overlayX + 10, overlayY + 5), Color.White);
             }
             else if (_inspectedNode is ColorOutputNode colNode)
             {
-                if (_font != null) _spriteBatch.DrawString(_font, $"R:{colNode.DisplayColor.R} G:{colNode.DisplayColor.G} B:{colNode.DisplayColor.B}", new Vector2(x, y), Color.White);
+                if (_font != null) _spriteBatch.DrawString(_font, $"R:{colNode.DisplayColor.R} G:{colNode.DisplayColor.G} B:{colNode.DisplayColor.B}", new Vector2(overlayX, overlayY), Color.White);
             }
             else if (_inspectedNode is BeepOutputNode beepNode)
             {
-                if (_font != null) _spriteBatch.DrawString(_font, $"Vol:{beepNode.Volume:0.0} Pitch:{beepNode.Pitch:0.0}", new Vector2(x, y), Color.White);
+                if (_font != null) _spriteBatch.DrawString(_font, $"Vol:{beepNode.Volume:0.0} Pitch:{beepNode.Pitch:0.0}", new Vector2(overlayX, overlayY), Color.White);
 
-                y += 30;
-                Rectangle prevRect = new Rectangle(x, y, 30, 30);
-                Rectangle nextRect = new Rectangle(x + 200, y, 30, 30);
+                overlayY += 30;
+                Rectangle prevRect = new Rectangle(overlayX, overlayY, 30, 30);
+                Rectangle nextRect = new Rectangle(overlayX + 200, overlayY, 30, 30);
 
                 _spriteBatch.Draw(_pixel, prevRect, Color.Gray);
                 _spriteBatch.Draw(_pixel, nextRect, Color.Gray);
 
                 if (_font != null)
                 {
-                    _spriteBatch.DrawString(_font, "<", new Vector2(x + 10, y + 5), Color.White);
-                    _spriteBatch.DrawString(_font, beepNode.SoundName, new Vector2(x + 40, y + 5), Color.White);
-                    _spriteBatch.DrawString(_font, ">", new Vector2(x + 210, y + 5), Color.White);
+                    _spriteBatch.DrawString(_font, "<", new Vector2(overlayX + 10, overlayY + 5), Color.White);
+                    _spriteBatch.DrawString(_font, beepNode.SoundName, new Vector2(overlayX + 40, overlayY + 5), Color.White);
+                    _spriteBatch.DrawString(_font, ">", new Vector2(overlayX + 210, overlayY + 5), Color.White);
                 }
             }
             else if (_inspectedNode is ScriptImporterNode scriptNode)
             {
                 if (_font != null)
                 {
-                    _spriteBatch.DrawString(_font, "Type script (var a=1; b=a+2;):", new Vector2(x, y), Color.White);
-                    _spriteBatch.DrawString(_font, _inputValueBuffer + "|", new Vector2(x, y + 20), Color.Yellow);
+                    _spriteBatch.DrawString(_font, "Type script (var a=1; b=a+2;):", new Vector2(overlayX, overlayY), Color.White);
+                    _spriteBatch.DrawString(_font, _inputValueBuffer + "|", new Vector2(overlayX, overlayY + 20), Color.Yellow);
 
-                    Rectangle btnRect = new Rectangle(x, y + 150, 100, 30);
+                    Rectangle btnRect = new Rectangle(overlayX, overlayY + 150, 100, 30);
                     _spriteBatch.Draw(_pixel, btnRect, Color.Gray);
                     DrawHollowRect(_spriteBatch, btnRect, Color.White);
-                    _spriteBatch.DrawString(_font, "Compile", new Vector2(x + 10, y + 155), Color.White);
+                    _spriteBatch.DrawString(_font, "Compile", new Vector2(overlayX + 10, overlayY + 155), Color.White);
                 }
             }
-            else if (_inspectedNode is ToyNode toyNode)
+            else if (_inspectedNode is MidiImporterNode midiNode)
             {
                 if (_font != null)
                 {
-                    string fileName = string.IsNullOrEmpty(toyNode.FilePath) ? "None" : Path.GetFileName(toyNode.FilePath);
-                    _spriteBatch.DrawString(_font, $"File: {fileName}", new Vector2(x, y), Color.White);
-                }
+                    _spriteBatch.DrawString(_font, "MIDI import", new Vector2(overlayX, overlayY), Color.White);
+                    _spriteBatch.DrawString(_font, midiNode.MidiPath, new Vector2(overlayX, overlayY + 20), Color.Yellow);
+                    _spriteBatch.DrawString(_font, midiNode.LastImportMessage, new Vector2(overlayX, overlayY + 40), Color.LightGray);
 
-                Rectangle btnRect = new Rectangle(x, y + 30, 120, 30);
-                _spriteBatch.Draw(_pixel, btnRect, Color.Gray);
-                DrawHollowRect(_spriteBatch, btnRect, Color.White);
-                if (_font != null) _spriteBatch.DrawString(_font, "Load Design", new Vector2(x + 10, y + 35), Color.White);
-            }
-            else if (_inspectedNode is ToyInputNode tin)
-            {
-                _spriteBatch.Draw(_pixel, new Rectangle(x, y, 30, 30), Color.Gray);
-                _spriteBatch.Draw(_pixel, new Rectangle(x + 100, y, 30, 30), Color.Gray);
-                if (_font != null)
-                {
-                    _spriteBatch.DrawString(_font, "-", new Vector2(x + 10, y + 5), Color.White);
-                    _spriteBatch.DrawString(_font, tin.Index.ToString(), new Vector2(x + 40, y + 5), Color.White);
-                    _spriteBatch.DrawString(_font, "+", new Vector2(x + 110, y + 5), Color.White);
-                }
-            }
-            else if (_inspectedNode is ToyOutputNode ton)
-            {
-                _spriteBatch.Draw(_pixel, new Rectangle(x, y, 30, 30), Color.Gray);
-                _spriteBatch.Draw(_pixel, new Rectangle(x + 100, y, 30, 30), Color.Gray);
-                if (_font != null)
-                {
-                    _spriteBatch.DrawString(_font, "-", new Vector2(x + 10, y + 5), Color.White);
-                    _spriteBatch.DrawString(_font, ton.Index.ToString(), new Vector2(x + 40, y + 5), Color.White);
-                    _spriteBatch.DrawString(_font, "+", new Vector2(x + 110, y + 5), Color.White);
+                    Rectangle openRect = new Rectangle(overlayX, overlayY + 70, 110, 30);
+                    Rectangle importRect = new Rectangle(overlayX + 130, overlayY + 70, 110, 30);
+                    _spriteBatch.Draw(_pixel, openRect, Color.Gray);
+                    _spriteBatch.Draw(_pixel, importRect, Color.Gray);
+                    DrawHollowRect(_spriteBatch, openRect, Color.White);
+                    DrawHollowRect(_spriteBatch, importRect, Color.White);
+                    _spriteBatch.DrawString(_font, "Open MIDI", new Vector2(overlayX + 10, overlayY + 75), Color.White);
+                    _spriteBatch.DrawString(_font, "Import", new Vector2(overlayX + 140, overlayY + 75), Color.White);
                 }
             }
         }
 
-        private void HandleTextInput(KeyboardState current, ref string buffer)
+        private static string EscapePowerShellString(string value)
         {
-            foreach (Keys key in current.GetPressedKeys())
-            {
-                if (!_prevKeyboardState.IsKeyDown(key))
-                {
-                    if (key == Keys.Back && buffer.Length > 0)
-                        buffer = buffer.Substring(0, buffer.Length - 1);
-                    else
-                    {
-                        char? c = KeyToChar(key);
-                        if (c.HasValue) buffer += c.Value;
-                    }
-                }
-            }
-        }
-
-        private string PromptForSavePath(string defaultName, string filter)
-        {
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            {
-                try
-                {
-                    string cmd = $"Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.SaveFileDialog; $d.Filter = '{filter}'; $d.FileName = '{defaultName}'; if ($d.ShowDialog() -eq 'OK') {{ $d.FileName }}";
-                    var psi = new ProcessStartInfo("powershell", $"-command \"{cmd}\"")
-                    {
-                        UseShellExecute = false,
-                        RedirectStandardOutput = true,
-                        CreateNoWindow = true
-                    };
-                    using var p = Process.Start(psi);
-                    string res = p.StandardOutput.ReadToEnd().Trim();
-                    p.WaitForExit();
-                    return string.IsNullOrEmpty(res) ? null : res;
-                }
-                catch { }
-                return null;
-            }
-            return defaultName;
-        }
-
-        private string PromptForOpenPath(string filter)
-        {
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            {
-                try
-                {
-                    string cmd = $"Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; $d.Filter = '{filter}'; if ($d.ShowDialog() -eq 'OK') {{ $d.FileName }}";
-                    var psi = new ProcessStartInfo("powershell", $"-command \"{cmd}\"")
-                    {
-                        UseShellExecute = false,
-                        RedirectStandardOutput = true,
-                        CreateNoWindow = true
-                    };
-                    using var p = Process.Start(psi);
-                    string res = p.StandardOutput.ReadToEnd().Trim();
-                    p.WaitForExit();
-                    return string.IsNullOrEmpty(res) ? null : res;
-                }
-                catch { }
-            }
-            return null;
-        }
-
-        private string GetClipboard()
-        {
-            try
-            {
-                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-                {
-                    var psi = new ProcessStartInfo("powershell", "-command \"Get-Clipboard\"");
-                    psi.UseShellExecute = false;
-                    psi.RedirectStandardOutput = true;
-                    psi.CreateNoWindow = true;
-                    using var p = Process.Start(psi);
-                    string text = p.StandardOutput.ReadToEnd();
-                    p.WaitForExit();
-                    return text.TrimEnd();
-                }
-            }
-            catch { }
-            return "";
-        }
-
-        private char? KeyToChar(Keys key)
-        {
-            if (key >= Keys.D0 && key <= Keys.D9) return (char)('0' + (key - Keys.D0));
-            if (key >= Keys.NumPad0 && key <= Keys.NumPad9) return (char)('0' + (key - Keys.NumPad0));
-            if (key == Keys.OemPeriod || key == Keys.Decimal) return '.';
-            if (key == Keys.OemMinus || key == Keys.Subtract) return '-';
-            return null;
-        }
-
-        private char? ScriptKeyToChar(Keys key, bool shift)
-        {
-            if (key >= Keys.A && key <= Keys.Z) return shift ? key.ToString()[0] : key.ToString().ToLower()[0];
-            if (key >= Keys.D0 && key <= Keys.D9)
-            {
-                string s = (key - Keys.D0).ToString();
-                if (shift)
-                {
-                    if (s == "9") return '(';
-                    if (s == "0") return ')';
-                    if (s == "8") return '*';
-                    if (s == "5") return '%';
-                }
-                return s[0];
-            }
-            if (key == Keys.OemPlus || key == Keys.Add) return shift ? '+' : '=';
-            if (key == Keys.OemMinus || key == Keys.Subtract) return shift ? '_' : '-';
-            if (key == Keys.OemPeriod) return shift ? '>' : '.';
-            if (key == Keys.OemComma) return shift ? '<' : ',';
-            if (key == Keys.OemSemicolon) return ';';
-            if (key == Keys.OemQuestion) return shift ? '?' : '/';
-            return null;
-        }
-
-
-        private void DeleteNode(Node node)
-        {
-            _engine.Nodes.Remove(node);
-            _nodeRects.Remove(node);
-            if (_inspectedNode == node) _inspectedNode = null;
-            _selectedNodes.Remove(node);
-
-            foreach (var n in _engine.Nodes)
-            {
-                foreach (var input in n.Inputs)
-                {
-                    input.ConnectedSources.RemoveAll(s => s.ParentNode == node);
-                }
-            }
-        }
-
-        private void DeleteSelectedNodes()
-        {
-            // Create a copy to avoid modification during iteration issues
-            var nodesToDelete = new List<Node>(_selectedNodes);
-            foreach (var node in nodesToDelete)
-            {
-                DeleteNode(node);
-            }
-            _selectedNodes.Clear();
-        }
-
-        private Node CloneNode(Node original)
-        {
-            Node clone = null;
-            if (original is ConstantNode c) clone = new ConstantNode(c.StoredValue);
-            else if (original is MathNode m) clone = new MathNode(m.Op);
-            else if (original is LogicNode l) clone = new LogicNode(l.Type);
-            else if (original is TimerNode) clone = new TimerNode();
-            else if (original is CounterNode cnt) { clone = new CounterNode(); ((CounterNode)clone).Value = cnt.Value; }
-            else if (original is RandomNode) clone = new RandomNode();
-            else if (original is ButtonNode b) { clone = new ButtonNode(); ((ButtonNode)clone).IsToggle = b.IsToggle; }
-            else if (original is KeyNode k) { clone = new KeyNode(); ((KeyNode)clone).Key = k.Key; ((KeyNode)clone).Name = k.Name; }
-            else if (original is CursorNode) clone = new CursorNode();
-            else if (original is ColorOutputNode) clone = new ColorOutputNode();
-            else if (original is BeepOutputNode bp) { clone = new BeepOutputNode(); ((BeepOutputNode)clone).SoundName = bp.SoundName; }
-            else if (original is ScreenNode) clone = new ScreenNode();
-            else if (original is ScriptImporterNode s) { clone = new ScriptImporterNode(); ((ScriptImporterNode)clone).Script = s.Script; }
-            else if (original is ToyNode t) { clone = new ToyNode(); ((ToyNode)clone).FilePath = t.FilePath; LoadToyNode((ToyNode)clone); }
-            else if (original is ToyInputNode tin) { clone = new ToyInputNode(); ((ToyInputNode)clone).Index = tin.Index; }
-            else if (original is ToyOutputNode ton) { clone = new ToyOutputNode(); ((ToyOutputNode)clone).Index = ton.Index; }
-            
-            if (clone != null)
-            {
-                // Copy generic properties if needed, though most are set in constructor
-            }
-            return clone;
-        }
-
-        private void CopyNodes()
-        {
-            _clipboardNodes.Clear();
-            _clipboardConnections.Clear();
-
-            if (_selectedNodes.Count == 0) return;
-
-            // Calculate bounds for relative positioning
-            int minX = int.MaxValue;
-            int minY = int.MaxValue;
-            foreach (var node in _selectedNodes)
-            {
-                if (_nodeRects.TryGetValue(node, out Rectangle r))
-                {
-                    if (r.X < minX) minX = r.X;
-                    if (r.Y < minY) minY = r.Y;
-                }
-            }
-
-            // 1. Clone Nodes
-            var nodeMap = new Dictionary<Node, int>(); // Map Original -> Index in Clipboard
-            for (int i = 0; i < _selectedNodes.Count; i++)
-            {
-                var original = _selectedNodes[i];
-                var clone = CloneNode(original);
-                if (clone != null)
-                {
-                    Point offset = Point.Zero;
-                    if (_nodeRects.TryGetValue(original, out Rectangle r))
-                        offset = new Point(r.X - minX, r.Y - minY);
-
-                    _clipboardNodes.Add((clone, offset));
-                    nodeMap[original] = _clipboardNodes.Count - 1;
-                }
-            }
-
-            // 2. Record Connections (only internal to selection)
-            for (int i = 0; i < _selectedNodes.Count; i++)
-            {
-                var original = _selectedNodes[i];
-                if (!nodeMap.ContainsKey(original)) continue;
-
-                for (int inputIdx = 0; inputIdx < original.Inputs.Count; inputIdx++)
-                {
-                    var input = original.Inputs[inputIdx];
-                    foreach (var source in input.ConnectedSources)
-                    {
-                        if (nodeMap.ContainsKey(source.ParentNode))
-                        {
-                            int sourceNodeIdx = nodeMap[source.ParentNode];
-                            int sourceOutputIdx = source.ParentNode.Outputs.IndexOf(source);
-                            
-                            _clipboardConnections.Add(new ConnectionData 
-                            { 
-                                TargetNodeIdx = nodeMap[original], 
-                                TargetInputIdx = inputIdx, 
-                                SourceNodeIdx = sourceNodeIdx, 
-                                SourceOutputIdx = sourceOutputIdx 
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        private void PasteNodes()
-        {
-            if (_clipboardNodes.Count == 0) return;
-
-            _selectedNodes.Clear();
-            var newNodes = new List<Node>();
-            Point mousePos = Mouse.GetState().Position;
-
-            // 1. Instantiate new nodes from clipboard templates
-            foreach (var entry in _clipboardNodes)
-            {
-                var newNode = CloneNode(entry.Node);
-                if (newNode != null)
-                {
-                    newNodes.Add(newNode);
-                    SpawnNodeAt(newNode, mousePos.X + entry.Offset.X, mousePos.Y + entry.Offset.Y);
-                    _selectedNodes.Add(newNode);
-                }
-            }
-
-            // 2. Restore connections
-            foreach (var conn in _clipboardConnections)
-            {
-                if (conn.TargetNodeIdx < newNodes.Count && conn.SourceNodeIdx < newNodes.Count)
-                {
-                    var target = newNodes[conn.TargetNodeIdx];
-                    var source = newNodes[conn.SourceNodeIdx];
-                    
-                    if (conn.TargetInputIdx < target.Inputs.Count && conn.SourceOutputIdx < source.Outputs.Count)
-                    {
-                        _engine.Connect(source, conn.SourceOutputIdx, target, conn.TargetInputIdx);
-                    }
-                }
-            }
-
-            // 3. Offset positions slightly to indicate new paste (or follow mouse if we tracked relative positions)
-            // For now, SpawnNode puts them at mouse position, but they will all stack.
-            // Better: Keep relative positions from clipboard.
-            // Since SpawnNode uses Mouse.GetState().Position, they all spawn there.
-            // We should arrange them relative to the first node.
-            // But we didn't store positions in clipboard.
-            // Let's just scatter them slightly or leave them stacked (user can drag).
-            // Actually, SpawnNodeAt uses specific X/Y. SpawnNode uses Mouse.
-            // Let's rely on the user dragging them apart for now, or improve Copy to store relative positions.
-            // Improvement: Store relative positions in Copy.
-            // But for this request, basic paste is fine.
-        }
-
-        private void SpawnNode(Node node)
-        {
-            var mousePos = Mouse.GetState().Position;
-            SpawnNodeAt(node, mousePos.X, mousePos.Y);
-        }
-
-        private void SpawnNodeAt(Node node, int x, int y)
-        {
-            _engine.Nodes.Add(node);
-            int width = 100;
-            int height = 60;
-            if (node.Inputs.Count + node.Outputs.Count > 2)
-            {
-                width = 120;
-                height = 80;
-            }
-            if (node is ScreenNode)
-            {
-                width = 140;
-                height = 140;
-            }
-            if (node is ToyNode) { width = 160; height = 240; }
-            _nodeRects[node] = new Rectangle(x, y, width, height);
-        }
-
-        private Vector2 GetInputPosition(Node node, int slotIndex)
-        {
-            var rect = _nodeRects[node];
-            float y = rect.Y + (rect.Height * (slotIndex + 1) / (float)(node.Inputs.Count + 1));
-            return new Vector2(rect.Left, y);
-        }
-
-        private Vector2 GetOutputPosition(Node node, int slotIndex)
-        {
-            var rect = _nodeRects[node];
-            float y = rect.Y + (rect.Height * (slotIndex + 1) / (float)(node.Outputs.Count + 1));
-            return new Vector2(rect.Right, y);
-        }
-
-        private float GetDistanceFromLineSegment(Vector2 p, Vector2 a, Vector2 b)
-        {
-            Vector2 ab = b - a;
-            float l2 = ab.LengthSquared();
-            if (l2 == 0) return (p - a).Length();
-            float t = Math.Clamp(Vector2.Dot(p - a, ab) / l2, 0f, 1f);
-            Vector2 projection = a + t * ab;
-            return (p - projection).Length();
-        }
-
-        private void DrawTpsGraph(SpriteBatch sb, Rectangle rect)
-        {
-            if (_tpsHistory.Count < 2) return;
-
-            sb.Draw(_pixel, rect, new Color(0, 0, 0, 100));
-            DrawHollowRect(sb, rect, Color.Gray, 1);
-
-            float maxVal = 600000000f;
-            foreach(var v in _tpsHistory) if(v > maxVal) maxVal = v;
-
-            float xStep = (float)rect.Width / (MaxTpsHistory - 1);
-            
-            for (int i = 0; i < _tpsHistory.Count - 1; i++)
-            {
-                float v1 = _tpsHistory[i];
-                float v2 = _tpsHistory[i+1];
-
-                Vector2 p1 = new Vector2(rect.X + i * xStep, rect.Bottom - (v1 / maxVal) * rect.Height);
-                Vector2 p2 = new Vector2(rect.X + (i + 1) * xStep, rect.Bottom - (v2 / maxVal) * rect.Height);
-                
-                DrawLine(sb, p1, p2, Color.Lime, 1);
-            }
-        }
-
-        // Helper to draw lines using the 1x1 pixel texture
-        private void DrawLine(SpriteBatch sb, Vector2 start, Vector2 end, Color color, float thickness = 2f)
-        {
-            var edge = end - start;
-            var angle = (float)Math.Atan2(edge.Y, edge.X);
-            sb.Draw(_pixel, new Rectangle((int)start.X, (int)start.Y, (int)edge.Length(), (int)thickness), null, color, angle, new Vector2(0, 0.5f), SpriteEffects.None, 0);
-        }
-
-        private void DrawHollowRect(SpriteBatch sb, Rectangle rect, Color color, int thickness = 2)
-        {
-            int t = thickness;
-            sb.Draw(_pixel, new Rectangle(rect.X, rect.Y, rect.Width, t), color); // Top
-            sb.Draw(_pixel, new Rectangle(rect.X, rect.Y + rect.Height - t, rect.Width, t), color); // Bottom
-            sb.Draw(_pixel, new Rectangle(rect.X, rect.Y, t, rect.Height), color); // Left
-            sb.Draw(_pixel, new Rectangle(rect.X + rect.Width - t, rect.Y, t, rect.Height), color); // Right
+            return value.Replace("'", "''");
         }
 
         private string SerializeGraph()
@@ -1810,6 +1071,7 @@ namespace ToyConEngine
                     var input = node.Inputs[i];
                     foreach (var source in input.ConnectedSources)
                     {
+                        if (source.ParentNode is null) continue;
                         int sourceId = nodeToId[source.ParentNode];
                         int sourceOutputIdx = source.ParentNode.Outputs.IndexOf(source);
                         sb.AppendLine($"CONN {sourceId} {sourceOutputIdx} {targetId} {i}");
@@ -1818,242 +1080,6 @@ namespace ToyConEngine
             }
 
             return sb.ToString();
-        }
-
-        private void SaveLayout(string filename)
-        {
-            File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, filename), SerializeGraph());
-        }
-
-        private void LoadGraph(GraphEngine engine, string[] lines, Dictionary<Node, Rectangle> rects = null)
-        {
-            engine.Nodes.Clear();
-            rects?.Clear();
-            
-            // Clear selection/inspection if we are loading the main graph
-            if (engine == _engine) { _selectedNodes.Clear(); _inspectedNode = null; _connectionStartNode = null; }
-
-            if (lines.Length == 0 || lines[0] != "TOYCON_v1") return;
-
-            var idToNode = new Dictionary<int, Node>();
-
-            foreach (var line in lines)
-            {
-                var parts = line.Split(' ');
-                if (parts[0] == "NODE")
-                {
-                    int id = int.Parse(parts[1]);
-                    string type = parts[2];
-                    int x = int.Parse(parts[3]);
-                    int y = int.Parse(parts[4]);
-                    string data = parts.Length > 5 ? string.Join(" ", parts.Skip(5)) : "";
-
-                    Node n = null;
-                    if (type == "ConstantNode") n = new ConstantNode(0);
-                    else if (type == "MathNode") n = new MathNode(MathNode.Operation.Add);
-                    else if (type == "LogicNode") n = new LogicNode(LogicNode.LogicType.And);
-                    else if (type == "TimerNode") n = new TimerNode();
-                    else if (type == "CounterNode") n = new CounterNode();
-                    else if (type == "RandomNode") n = new RandomNode();
-                    else if (type == "ButtonNode") n = new ButtonNode();
-                    else if (type == "KeyNode") n = new KeyNode();
-                    else if (type == "CursorNode") n = new CursorNode();
-                    else if (type == "ColorOutputNode") n = new ColorOutputNode();
-                    else if (type == "BeepOutputNode") n = new BeepOutputNode();
-                    else if (type == "ScreenNode") n = new ScreenNode();
-                    else if (type == "ScriptImporterNode") n = new ScriptImporterNode();
-                    else if (type == "ToyNode") n = new ToyNode();
-                    else if (type == "ToyInputNode") n = new ToyInputNode();
-                    else if (type == "ToyOutputNode") n = new ToyOutputNode();
-
-                    if (n != null)
-                    {
-                        ApplyNodeData(n, data);
-                        engine.Nodes.Add(n);
-                        if (rects != null)
-                        {
-                            int width = 100;
-                            int height = 60;
-                            if (n.Inputs.Count + n.Outputs.Count > 2) { width = 120; height = 80; }
-                            if (n is ScreenNode) { width = 140; height = 140; }
-                            if (n is ToyNode) { width = 160; height = 240; }
-                            rects[n] = new Rectangle(x, y, width, height);
-                        }
-                        idToNode[id] = n;
-                    }
-                }
-                else if (parts[0] == "CONN")
-                {
-                    int srcId = int.Parse(parts[1]);
-                    int srcSlot = int.Parse(parts[2]);
-                    int tgtId = int.Parse(parts[3]);
-                    int tgtSlot = int.Parse(parts[4]);
-
-                    if (idToNode.ContainsKey(srcId) && idToNode.ContainsKey(tgtId))
-                    {
-                        engine.Connect(idToNode[srcId], srcSlot, idToNode[tgtId], tgtSlot);
-                    }
-                }
-            }
-        }
-
-        private void LoadLayout(string filename)
-        {
-            string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, filename);
-            if (!File.Exists(path)) return;
-            LoadGraph(_engine, File.ReadAllLines(path), _nodeRects);
-        }
-
-        private void LoadToyNode(ToyNode node)
-        {
-            if (string.IsNullOrEmpty(node.FilePath) || !File.Exists(node.FilePath)) return;
-            string[] lines = File.ReadAllLines(node.FilePath);
-            LoadGraph(node.InternalEngine, lines, node.InternalRects);
-            node.RefreshPorts();
-        }
-
-        private void ExportStandalone(string filename)
-        {
-            string logPath = Path.Combine(Path.GetDirectoryName(filename), "export_log.txt");
-            void Log(string msg) => File.AppendAllText(logPath, $"{DateTime.Now}: {msg}\n");
-
-            try
-            {
-                var currentExe = Environment.ProcessPath;
-                var sourceDir = AppDomain.CurrentDomain.BaseDirectory;
-                var destDir = Path.GetDirectoryName(filename);
-                var tempDir = Path.Combine(destDir, "ToyCon_Temp_Build\\");
-                var exportPath = Path.Combine(tempDir, "ToyCon_Export.exe");
-
-                // 1. Copy the current executable
-                if (!Directory.Exists(tempDir)) 
-                {
-                    Directory.CreateDirectory(tempDir);
-                }
-
-                CopyDirectory(sourceDir, tempDir);
-                File.Copy(currentExe, exportPath, true);
-
-                // 2. Prepare data
-                string graphData = SerializeGraph();
-                byte[] dataBytes = Encoding.UTF8.GetBytes(graphData);
-                byte[] lengthBytes = BitConverter.GetBytes(dataBytes.Length);
-                byte[] magicBytes = Encoding.UTF8.GetBytes(StandaloneMagic); // 10 bytes
-
-                // 3. Append data to the end of the new executable
-                using (var stream = new FileStream(exportPath, FileMode.Append))
-                {
-                    stream.Write(dataBytes, 0, dataBytes.Length);
-                    stream.Write(lengthBytes, 0, lengthBytes.Length);
-                    stream.Write(magicBytes, 0, magicBytes.Length);
-                }
-
-                // 4. Find Packer
-                string baseDir = Path.GetDirectoryName(Environment.ProcessPath);
-                string packerPath = Path.Combine(baseDir, "tools", "packer.exe");
-                string loaderPath = Path.Combine(baseDir, "tools", "loader.exe");
-
-                if (!File.Exists(packerPath))
-                {
-                    var dir = new DirectoryInfo(baseDir);
-                    while (dir != null)
-                    {
-                        var check = Path.Combine(dir.FullName, "tools", "packer.exe");
-                        if (File.Exists(check))
-                        {
-                            packerPath = check;
-                            loaderPath = Path.Combine(dir.FullName, "tools", "loader.exe");
-                            break;
-                        }
-                        dir = dir.Parent;
-                    }
-                }
-
-                // 5. Run Packer
-                if (File.Exists(packerPath))
-                {
-                    // Ensure loader.exe is present in temp dir for packer
-                    if (File.Exists(loaderPath))
-                    {
-                        File.Copy(loaderPath, Path.Combine(tempDir, "loader.exe"), true);
-                    }
-
-                    var psi = new ProcessStartInfo(packerPath)
-                    {
-                        ArgumentList = { tempDir, exportPath, filename },
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        WorkingDirectory = Path.GetDirectoryName(packerPath)
-                    };
-                    var p = Process.Start(psi);
-                    p.WaitForExit();
-                }
-
-                // 6. Cleanup
-                try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true); } catch (Exception ex) { Log($"Cleanup error: {ex.Message}"); }
-            }
-            catch (Exception e)
-            {
-                Log($"CRITICAL ERROR: {e.Message}\n{e.StackTrace}");
-            }
-        }
-
-        private void CopyDirectory(string sourceDir, string destDir)
-        {
-            var dir = Directory.CreateDirectory(destDir);
-            foreach (var file in Directory.GetFiles(sourceDir))
-            {
-                try
-                {
-                    string destFile = Path.Combine(destDir, Path.GetFileName(file));
-                    File.Copy(file, destFile, true);
-                }
-                catch { }
-            }
-            foreach (var subDir in Directory.GetDirectories(sourceDir))
-            {
-                try
-                {
-                    if (new DirectoryInfo(subDir).FullName == dir.FullName) continue;
-                    string destSubDir = Path.Combine(destDir, Path.GetFileName(subDir));
-                    CopyDirectory(subDir, destSubDir);
-                }
-                catch { }
-            }
-        }
-
-        private bool TryLoadEmbeddedLayout()
-        {
-            try
-            {
-                var currentExe = Environment.ProcessPath;
-                using (var stream = new FileStream(currentExe, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                {
-                    if (stream.Length < 20) return false; // Magic(10) + Int(4) + minimal data
-
-                    byte[] magicCheck = new byte[10];
-                    stream.Seek(-10, SeekOrigin.End);
-                    stream.Read(magicCheck, 0, 10);
-                    string magic = Encoding.UTF8.GetString(magicCheck);
-                    
-                    if (magic != StandaloneMagic) return false;
-
-                    byte[] lengthCheck = new byte[4];
-                    stream.Seek(-14, SeekOrigin.End);
-                    stream.Read(lengthCheck, 0, 4);
-                    int dataLength = BitConverter.ToInt32(lengthCheck, 0);
-
-                    byte[] data = new byte[dataLength];
-                    stream.Seek(-(14 + dataLength), SeekOrigin.End);
-                    stream.Read(data, 0, dataLength);
-
-                    string layout = Encoding.UTF8.GetString(data);
-                    // Split by newline, handling both \r\n and \n
-                    LoadGraph(_engine, layout.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None), _nodeRects);
-                    return true;
-                }
-            }
-            catch { return false; }
         }
 
         private string GetNodeData(Node node)
@@ -2066,9 +1092,7 @@ namespace ToyConEngine
             if (node is BeepOutputNode beep) return beep.SoundName;
             if (node is CounterNode cnt) return cnt.Value.ToString();
             if (node is ScriptImporterNode s) return Convert.ToBase64String(Encoding.UTF8.GetBytes(s.Script));
-            if (node is ToyNode t) return Convert.ToBase64String(Encoding.UTF8.GetBytes(t.FilePath ?? ""));
-            if (node is ToyInputNode tin) return tin.Index.ToString();
-            if (node is ToyOutputNode ton) return ton.Index.ToString();
+            if (node is MidiImporterNode midi) return Convert.ToBase64String(Encoding.UTF8.GetBytes(midi.MidiPath + "\n" + midi.LastImportMessage));
             return "";
         }
 
@@ -2084,9 +1108,13 @@ namespace ToyConEngine
                 if (node is BeepOutputNode beep) beep.SoundName = data;
                 if (node is CounterNode cnt) cnt.Value = float.Parse(data);
                 if (node is ScriptImporterNode s) s.Script = Encoding.UTF8.GetString(Convert.FromBase64String(data));
-                if (node is ToyNode t) { t.FilePath = Encoding.UTF8.GetString(Convert.FromBase64String(data)); LoadToyNode(t); }
-                if (node is ToyInputNode tin) tin.Index = int.Parse(data);
-                if (node is ToyOutputNode ton) ton.Index = int.Parse(data);
+                if (node is MidiImporterNode midi)
+                {
+                    var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(data));
+                    var parts = decoded.Split(new[] { '\n' }, 2);
+                    midi.MidiPath = parts[0];
+                    midi.LastImportMessage = parts.Length > 1 ? parts[1] : "Loaded from layout";
+                }
             } catch {}
         }
     }

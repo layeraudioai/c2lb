@@ -12,6 +12,11 @@ namespace ToyConEngine
             AddOutput("Y");
         }
 
-        public override void Evaluate(GameTime gameTime) => Outputs[0].SetValue(Mouse.GetState().X);
+        public override void Evaluate(GameTime gameTime)
+        {
+            var mouseState = Mouse.GetState();
+            Outputs[0].SetValue(Math.Max(0, mouseState.X));
+            Outputs[1].SetValue(Math.Max(0, mouseState.Y));
+        }
     }
 }

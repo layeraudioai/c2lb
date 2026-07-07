@@ -5,9 +5,9 @@ namespace ToyConEngine
 {
     public abstract class Node
     {
-        public string Name { get; set; }
-        public List<InputPort> Inputs { get; set; } = new List<InputPort>();
-        public List<OutputPort> Outputs { get; set; } = new List<OutputPort>();
+        public string Name { get; set; } = string.Empty;
+        public List<InputPort> Inputs { get; set; } = new();
+        public List<OutputPort> Outputs { get; set; } = new();
 
         public abstract void Evaluate(GameTime gameTime);
 

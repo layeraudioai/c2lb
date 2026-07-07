@@ -18,6 +18,11 @@ namespace ToyConEngine
             AddInput("Pitch");
         }
 
-        public override void Evaluate(GameTime gameTime) => ShouldPlay = Inputs[0].GetValue() > 0 && !_prevTrigger;
+        public override void Evaluate(GameTime gameTime)
+        {
+            bool trigger = Inputs[0].GetValue() > 0;
+            ShouldPlay = trigger && !_prevTrigger;
+            _prevTrigger = trigger;
+        }
     }
 }
