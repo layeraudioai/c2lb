@@ -14,7 +14,7 @@ i have a benchmark under file -> benchmark that'll optimize to your pc
 *       unless you have the loader and packer exes in tools already from dir2exe, if so, same as above but without `tools`
 *
 included font: arial (compiled as xnb)
-included samples: GINTRO - BOOM BAP DRUM KIT VOL.1 (compiled as xnb)
+included samples: GINTRO - BOOM BAP DRUM KIT VOL.1 (compiled as xnb, will remove if needed) & Generated Samples via SampleGen
 
 samples and font both under
 The license provided with Microsoft software allows personal and non-commercial use of Arial.
